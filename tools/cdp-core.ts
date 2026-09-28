@@ -16,10 +16,14 @@ export const DEFAULT_CDP_PORT = 9333;
 export const DEFAULT_DEV_URL = "http://localhost:5174/?game=dev";
 export const GAME_DEV_FILTER = "game=dev";
 const IS_MAC = process.platform === "darwin";
-const CHROME_PATH = IS_MAC
+const IS_LINUX = process.platform === "linux";
+const LINUX_CHROMES = ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave", "brave-browser"];
+const CHROME_PATH = process.env.BS_CHROME ?? (IS_MAC
     ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    : "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const DEFAULT_PROFILE = IS_MAC
+    : IS_LINUX
+      ? (LINUX_CHROMES.map((b) => Bun.which(b)).find(Boolean) ?? "google-chrome")
+      : "C:/Program Files/Google/Chrome/Application/chrome.exe");
+const DEFAULT_PROFILE = IS_MAC || IS_LINUX
     ? `${process.env.HOME}/.bottleship-cdp-profile`
     : `${process.cwd()}/tmp/cdp-profile`;
 
@@ -64,6 +68,8 @@ export async function launchOrAttachChrome(opts: { port?: number; profile?: stri
             stdout: "ignore",
             stderr: "ignore",
         }).unref();
+    } else if (IS_LINUX) {
+        Bun.spawn(["setsid", "-f", CHROME_PATH, ...args], { stdout: "ignore", stderr: "ignore" }).unref();
     } else {
         // Detached via PowerShell Start-Process so Chrome outlives this bun process
         // (a plain Bun.spawn child dies with bun on Windows).

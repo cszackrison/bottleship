@@ -6,9 +6,10 @@
 import { IModule } from "../core/module";
 import { Process } from "../core/process";
 import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
+import { System } from "../core/system";
 import {
     makeWsaStartup,
-    WsaSocketTable,
+    sharedSocketTable,
     makeSocketExports,
     inetAddr,
     createDnsStubs,
@@ -25,11 +26,10 @@ const SOCKET_ERROR = -1;
 export class Wsock32 implements IModule {
     name = "wsock32";
     exports: Record<string, ThunkImplementation> = {};
-    private socketTable = new WsaSocketTable();
+    private socketTable = sharedSocketTable;
 
     initialize(process: Process): void {
-        let wsaLastError = 0;
-
+        const sched = () => System.getInstance().scheduler;
         const ok = () => 0;
         const htons = (_ctx: unknown, _mem: unknown, args: number[]) => {
             const value = args[0] ?? 0;
@@ -44,14 +44,12 @@ export class Wsock32 implements IModule {
                 ((value >>> 24) & 0xff)
             ) >>> 0;
         };
-        const getLastError = () => wsaLastError >>> 0;
+        const getLastError = () => sched().getLastError();
         const setLastError = (_ctx: unknown, _mem: unknown, args: number[]) => {
-            wsaLastError = (args[0] ?? 0) | 0;
+            sched().setLastError(args[0] ?? 0);
             return 0;
         };
-        const setError = (code: number) => {
-            wsaLastError = code | 0;
-        };
+        const setError = (code: number) => sched().setLastError(code);
         const startup = makeWsaStartup(setError, WSAEFAULT, SOCKET_ERROR);
         const socketExports = makeSocketExports(this.socketTable, setError);
         const dns = createDnsStubs(process, setError);

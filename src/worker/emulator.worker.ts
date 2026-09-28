@@ -130,6 +130,7 @@ import { handleAudioBridgeMessage } from "./worker-handlers/audio-bridge";
 import { handleLoggingMessage } from "./worker-handlers/logging";
 import { handleDebugMonitorMessage } from "./worker-handlers/debug-monitor";
 import { handleRegistryMessage } from "./worker-handlers/registry";
+import { configureNetplay } from "./net/relay-link";
 
 bootMark("worker-script-start");
 
@@ -2983,6 +2984,11 @@ self.onmessage = (event: MessageEvent) => {
     } catch (error) {
       self.postMessage({ type: replyType, ok: false, error: String(error) });
     }
+  }
+
+  if (message?.type === "netplay_config") {
+    configureNetplay(typeof message.url === "string" && message.url ? message.url : null);
+    return;
   }
 
   if (message?.type === "pause") {

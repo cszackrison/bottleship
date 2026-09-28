@@ -74,6 +74,9 @@ export class HarnessChain {
 
     // ── input ──
     click(target: string | number): this { return this.push("click", [target]); }
+    clickAt(x: number, y: number): this { return this.push("clickAt", [x, y]); }
+    /** Press + hold across real frames — for guests that poll button state (DInput/GetAsyncKeyState). */
+    clickHold(x: number, y: number, holdMs = 200, button = 0): this { return this.push("clickHold", [x, y, holdMs, button]); }
     key(vk: number | string, opts?: { down?: boolean; up?: boolean }): this { return this.push("key", [vk, opts]); }
     /** Press + hold a key across real frames, release on a timer — the keyboard twin of
      *  clickHold. A synchronous key tap is invisible to low-fps state-polling guests
@@ -107,6 +110,8 @@ export class HarnessChain {
     perfSpikes(opts?: { top?: number; minMs?: number }): this { return this.push("perfSpikes", [opts]); }
     /** Latest + average frame sample + spike count. */
     perfStats(): this { return this.push("perfStats", []); }
+    /** Netplay link: IPX node, relay attached, sent/received/dropped datagrams. */
+    netplay(): this { return this.push("netplay", []); }
     /** Named-bucket sub-phase timings (avg/total/max/count). filter by substring; maxMs = worst single call. */
     profilerStats(opts?: { filter?: string; top?: number; sort?: "max" | "total" | "avg" }): this { return this.push("profilerStats", [opts]); }
 

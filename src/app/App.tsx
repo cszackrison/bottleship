@@ -11,6 +11,7 @@ import DebugGPUPanel from '../debug/DebugGPUPanel';
 import FrameAnalysisPanel from '../debug/FrameAnalysisPanel';
 import { InputStatusOverlay, type InputStatus } from './InputStatusOverlay';
 import { AudioEngine, AudioPlayEncodedPayload, AudioPlayPayload, AudioUpdatePayload } from "../audio/audio-engine";
+import { netplayRelayUrl } from "./netplay-url";
 import { getLogClient, sendLogToServer, writeDebugFile, writeDebugFileBase64, rotateLogFile } from "../utils/log-client";
 import { installHarnessFacade } from "../harness/facade";
 import { getCachedGamepadMeta, initGamepadCache, readLiveGamepad, rescanGamepads } from "../gamepad-cache";
@@ -682,6 +683,13 @@ export default function App() {
         }
         if (Object.keys(flags).length) console.info("[bs] replayed debug flags:", flags);
       } catch { /* corrupt/no flags */ }
+      const netplayUrl = netplayRelayUrl(new URLSearchParams(window.location.search));
+      if (netplayUrl) globalWorker.postMessage({ type: "netplay_config", url: netplayUrl });
+      (window as any).joinRoom = (room: string | null) => {
+        const url = room ? netplayRelayUrl(new URLSearchParams({ room })) : null;
+        globalWorker?.postMessage({ type: "netplay_config", url });
+        return url;
+      };
       (window as any).dbgFlag = (key: string, value: unknown) => {
         const flags = JSON.parse(localStorage.getItem("bs_debug_flags") || "{}");
         if (value === undefined || value === null) delete flags[key]; else flags[key] = value;

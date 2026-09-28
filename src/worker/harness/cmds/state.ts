@@ -18,6 +18,8 @@ import { faultRecorder } from "../../core/memory/fault-recorder";
 import { stubRegistry } from "../../core/diagnostics/stub-registry";
 import { getProcAddressRegistry } from "../../core/diagnostics/get-proc-address-registry";
 import { apiCensus } from "../../core/diagnostics/api-census";
+import { ipxNetwork } from "../../net/ipx-network";
+import { nodeKey } from "../../net/netplay-wire";
 
 export function registerStateCommands(svc: HarnessService): void {
     /** Health probe: confirms the worker harness is wired and a process is (or isn't) loaded. */
@@ -52,6 +54,9 @@ export function registerStateCommands(svc: HarnessService): void {
         return out;
     });
 
+    /** netplay() — this machine's IPX node, whether a relay link is attached, and datagram counters. */
+    svc.register("netplay", () => ({ node: nodeKey(ipxNetwork.node), connected: ipxNetwork.connected, ...ipxNetwork.stats }));
+
     /** Quick CPU register snapshot (subset of state(['cpu'])). */
     svc.register("cpu", () => serializeCpu());
 
@@ -73,6 +78,34 @@ export function registerStateCommands(svc: HarnessService): void {
         let hex = "";
         for (let i = 0; i < slice.length; i++) hex += slice[i].toString(16).padStart(2, "0");
         return { base: "0x" + addr.toString(16), len, hex };
+    });
+
+    /**
+     * counterScan(addr, len, {minPerSec?, maxPerSec?, top?}) — find guest dwords that tick at a
+     * steady rate (frame counters, game clocks). First call snapshots the range; the next call on
+     * the same range returns dwords whose increase/sec lies in [minPerSec, maxPerSec] and resets.
+     */
+    let counterSnap: { addr: number; len: number; t: number; data: Uint32Array } | null = null;
+    svc.register("counterScan", (args) => {
+        const addr = ((args[0] as number) >>> 0) & ~3;
+        const len = Math.min(((args[1] as number) >>> 0) & ~3, 0x1000000);
+        const opts = (args[2] ?? {}) as { minPerSec?: number; maxPerSec?: number; top?: number };
+        const mem = sys().process?.getCurrentMemory?.();
+        if (!mem || addr + len > mem.length) throw new HarnessError("bad range or no process", HarnessErrorCode.BAD_ARGS);
+        const now = new Uint32Array(mem.buffer.slice(mem.byteOffset + addr, mem.byteOffset + addr + len));
+        const t = performance.now();
+        const prev = counterSnap;
+        counterSnap = { addr, len, t, data: now };
+        if (!prev || prev.addr !== addr || prev.len !== len) return { snapshot: true, addr: "0x" + addr.toString(16), len };
+        const secs = (t - prev.t) / 1000;
+        const lo = opts.minPerSec ?? 1, hi = opts.maxPerSec ?? 1000;
+        const hits: { addr: string; from: number; to: number; perSec: number }[] = [];
+        for (let i = 0; i < now.length; i++) {
+            const d = (now[i] - prev.data[i]) >>> 0;
+            const rate = d / secs;
+            if (d > 0 && rate >= lo && rate <= hi) hits.push({ addr: "0x" + (addr + i * 4).toString(16), from: prev.data[i], to: now[i], perSec: Math.round(rate * 10) / 10 });
+        }
+        return { secs: Math.round(secs * 1000) / 1000, count: hits.length, hits: hits.slice(0, opts.top ?? 64) };
     });
 
     /**

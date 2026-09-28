@@ -7,6 +7,7 @@ import { Marshaler } from "../core/memory/marshaler";
 import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import { Process } from "../core/process";
 import { System } from "../core/system";
+import { AF_IPX, IpxSocket, NSPROTO_IPX, SOCK_DGRAM, WSAEPROTONOSUPPORT, WSAESOCKTNOSUPPORT, threadErrorSink } from "./wsa-ipx";
 
 /**
  * Faithful `inet_addr` (winsock 1.1 / 2). Parses a dotted-address string into an in_addr.s_addr
@@ -460,10 +461,11 @@ function writeFdSetSockets(mem: Uint8Array, ptr: number, sockets: number[]): boo
 }
 
 /**
- * select(nfds, readfds, writefds, exceptfds, timeout) — nfds is ignored (BSD source
- * compatibility only, per Winsock docs). This offline stub never has inbound data or OOB
- * data pending (mirrors recv/recvfrom always failing — see WsaSocketTable), but a connected
- * socket is always ready to write (mirrors connect() completing synchronously). A socket
+ * select(nfds, readfds, writefds, exceptfds, timeout) — nfds is ignored (BSD source compatibility
+ * only, per Winsock docs). IPX datagram sockets are readable with a queued datagram and always
+ * writable; offline AF_INET stubs never have inbound data but a connected one is writable. With
+ * nothing ready and an IPX socket in readfds the caller parks until data, close, or the timeout
+ * (NULL = infinite); offline-only sets return 0 at once since nothing could ever arrive. A socket
  * that isn't valid in any supplied set is a WSAENOTSOCK error for the whole call, per spec.
  */
 export function makeSelect(table: WsaSocketTable, setLastError: (code: number) => void): ThunkImplementation {
@@ -471,6 +473,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         const readfdsPtr = args[1] >>> 0;
         const writefdsPtr = args[2] >>> 0;
         const exceptfdsPtr = args[3] >>> 0;
+        const timeoutPtr = args[4] >>> 0;
 
         const readSockets = parseFdSet(mem, readfdsPtr);
         const writeSockets = parseFdSet(mem, writefdsPtr);
@@ -483,17 +486,40 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
             }
         }
 
-        const readyWrite = writeSockets.filter((s) => table.isConnected(s));
+        const publish = (m: Uint8Array, fail: (code: number) => void): number => {
+            const readyRead = readSockets.filter((s) => table.ipx(s)?.readable);
+            const readyWrite = writeSockets.filter((s) => table.ipx(s) || table.isConnected(s));
+            if (!writeFdSetSockets(m, readfdsPtr, readyRead) ||
+                !writeFdSetSockets(m, writefdsPtr, readyWrite) ||
+                !writeFdSetSockets(m, exceptfdsPtr, [])) {
+                fail(WSAEFAULT);
+                return SOCKET_ERROR;
+            }
+            fail(0);
+            return readyRead.length + readyWrite.length;
+        };
 
-        if (!writeFdSetSockets(mem, readfdsPtr, []) ||
-            !writeFdSetSockets(mem, writefdsPtr, readyWrite) ||
-            !writeFdSetSockets(mem, exceptfdsPtr, [])) {
-            setLastError(WSAEFAULT);
-            return SOCKET_ERROR;
-        }
+        const ipxReaders = readSockets.map((s) => table.ipx(s)).filter((x) => x !== undefined);
+        const anyReady = ipxReaders.some((x) => x.readable) || writeSockets.some((s) => table.ipx(s) || table.isConnected(s));
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const timeoutMs = timeoutPtr ? view.getInt32(timeoutPtr, true) * 1000 + view.getInt32(timeoutPtr + 4, true) / 1000 : Infinity;
+        if (anyReady || ipxReaders.length === 0 || timeoutMs <= 0) return publish(mem, setLastError);
 
-        setLastError(0);
-        return readyWrite.length;
+        const onError = threadErrorSink();
+        return new Promise<number>((resolve) => {
+            const unsubs: Array<() => void> = [];
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                if (timer) clearTimeout(timer);
+                for (const u of unsubs) u();
+                resolve(publish(Mem.getView() ?? mem, onError));
+            };
+            for (const r of ipxReaders) unsubs.push(r.onReadable(finish));
+            if (Number.isFinite(timeoutMs)) timer = setTimeout(finish, timeoutMs);
+        });
     };
 }
 
@@ -774,14 +800,19 @@ export const WSAENOBUFS = 10055;
 interface StubSocket {
     connected: boolean;
     nonBlocking: boolean;
+    ipx?: IpxSocket;
 }
 
-/** Deterministic offline socket table — connect succeeds, I/O is no-network safe. */
+/**
+ * Process socket table. AF_INET sockets are deterministic offline stubs (connect succeeds, no
+ * data ever arrives); AF_IPX datagram sockets are real, routed over the virtual IPX network.
+ */
 export class WsaSocketTable {
     private nextId = 1;
     private sockets = new Map<number, StubSocket>();
 
     reset(): void {
+        for (const sock of this.sockets.values()) sock.ipx?.close();
         this.nextId = 1;
         this.sockets.clear();
     }
@@ -792,8 +823,27 @@ export class WsaSocketTable {
         return id;
     }
 
+    /** socket(af, type, protocol): IPX datagram sockets are real; everything else is the offline stub. */
+    create(af: number, type: number, protocol: number): { s: number; err: number } {
+        if (af !== AF_IPX) return { s: this.socket(), err: 0 };
+        if (type !== SOCK_DGRAM) return { s: INVALID_SOCKET, err: WSAESOCKTNOSUPPORT };
+        if (protocol !== 0 && (protocol < NSPROTO_IPX || protocol > NSPROTO_IPX + 255)) return { s: INVALID_SOCKET, err: WSAEPROTONOSUPPORT };
+        const id = this.nextId++;
+        const ipx = new IpxSocket();
+        if (protocol > NSPROTO_IPX) ipx.ptype = protocol - NSPROTO_IPX;
+        this.sockets.set(id, { connected: false, nonBlocking: false, ipx });
+        return { s: id, err: 0 };
+    }
+
+    ipx(s: number): IpxSocket | undefined {
+        return this.sockets.get(s >>> 0)?.ipx;
+    }
+
     closesocket(s: number): number {
-        if (!this.sockets.delete(s >>> 0)) return SOCKET_ERROR;
+        const sock = this.sockets.get(s >>> 0);
+        if (!sock) return SOCKET_ERROR;
+        sock.ipx?.close();
+        this.sockets.delete(s >>> 0);
         return 0;
     }
 
@@ -864,12 +914,16 @@ export class WsaSocketTable {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
         const FIONBIO = 0x8004667e;
+        const FIONREAD = 0x4004667f;
         if (cmd === FIONBIO && argp) {
             const view = mem
                 ? new DataView(mem.buffer, mem.byteOffset, mem.byteLength)
                 : null;
             const on = view ? view.getUint32(argp, true) : (Mem.readUint32(argp) ?? 0);
             sock.nonBlocking = on !== 0;
+            if (sock.ipx) sock.ipx.nonBlocking = on !== 0;
+        } else if (cmd === FIONREAD && argp && sock.ipx) {
+            if (!writeU32(mem, argp, sock.ipx.pendingBytes)) return SOCKET_ERROR;
         } else if (argp) {
             if (mem) {
                 const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -881,6 +935,9 @@ export class WsaSocketTable {
         return 0;
     }
 }
+
+/** One socket namespace per process, shared by wsock32 and ws2_32 (wsock32 forwards to ws2_32 on Windows). */
+export const sharedSocketTable = new WsaSocketTable();
 
 export function makeSocketExports(
     table: WsaSocketTable,
@@ -894,28 +951,38 @@ export function makeSocketExports(
         return true;
     };
 
+    const publish = (r: { ret: number; err: number }): number => {
+        setLastError(r.err);
+        return r.ret;
+    };
+    const createSocket: ThunkImplementation = (_ctx, _mem, args) => {
+        const { s, err } = table.create(args[0] | 0, args[1] | 0, args[2] | 0);
+        setLastError(err);
+        return s;
+    };
+
     return {
-        socket: () => {
-            const id = table.socket();
-            setLastError(0);
-            return id;
-        },
+        socket: createSocket,
         closesocket: (_ctx, _mem, args) => {
             const s = args[0] >>> 0;
             const ret = table.closesocket(s);
             setLastError(ret === 0 ? 0 : WSAENOTSOCK);
             return ret;
         },
-        connect: (_ctx, _mem, args) => {
+        connect: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.connect(mem, args[1] >>> 0, args[2] | 0));
             const ret = table.connect(s);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        bind: (_ctx, _mem, args) => {
+        bind: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.bind(mem, args[1] >>> 0, args[2] | 0));
             setLastError(0);
             return table.bind(s);
         },
@@ -931,45 +998,60 @@ export function makeSocketExports(
             setLastError(0);
             return table.accept(s);
         },
-        send: (_ctx, _mem, args) => {
+        send: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return ipx.peer ? publish(ipx.sendto(mem, args[1] >>> 0, len, 0, 0)) : publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
             const ret = table.send(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        recv: (_ctx, _mem, args) => {
+        recv: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) {
+                if (!ipx.peer) return publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
+                return ipx.recvfrom(mem, args[1] >>> 0, args[2] | 0, 0, 0, threadErrorSink());
+            }
             const ret = table.recv(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        recvfrom: (_ctx, _mem, args) => {
+        recvfrom: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return ipx.recvfrom(mem, args[1] >>> 0, args[2] | 0, args[4] >>> 0, args[5] >>> 0, threadErrorSink());
             const ret = table.recvfrom(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        sendto: (_ctx, _mem, args) => {
+        sendto: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.sendto(mem, args[1] >>> 0, len, args[4] >>> 0, args[5] | 0));
             const ret = table.sendto(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        setsockopt: (_ctx, _mem, args) => {
+        setsockopt: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.setsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] | 0));
             setLastError(0);
             return table.setsockopt(s);
         },
-        getsockopt: (_ctx, _mem, args) => {
+        getsockopt: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.getsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] >>> 0));
             setLastError(0);
             return table.getsockopt(s);
         },
@@ -991,6 +1073,8 @@ export function makeSocketExports(
             const name = args[1] >>> 0;
             const namelenPtr = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.getpeername(mem, name, namelenPtr));
             if (!table.isConnected(s)) {
                 setLastError(WSAENOTCONN);
                 return SOCKET_ERROR;
@@ -1024,6 +1108,8 @@ export function makeSocketExports(
             const name = args[1] >>> 0;
             const namelenPtr = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            const ipx = table.ipx(s);
+            if (ipx) return publish(ipx.getsockname(mem, name, namelenPtr));
             if (!name || !namelenPtr) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
@@ -1064,7 +1150,7 @@ export function makeSocketExports(
             if (code === FIONBIO && inBuf) {
                 table.ioctl(s, FIONBIO, inBuf, mem);
             } else if (code === FIONREAD && outBuf && outLen >= 4) {
-                if (!writeU32(mem, outBuf, 0)) {
+                if (!writeU32(mem, outBuf, table.ipx(s)?.pendingBytes ?? 0)) {
                     setLastError(WSAEFAULT);
                     return SOCKET_ERROR;
                 }
@@ -1092,11 +1178,7 @@ export function makeSocketExports(
             setLastError(0);
             return 0;
         },
-        WSASocketA: () => {
-            const id = table.socket();
-            setLastError(0);
-            return id;
-        },
+        WSASocketA: createSocket,
     };
 }
 

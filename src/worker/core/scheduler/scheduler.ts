@@ -2927,6 +2927,15 @@ export class Scheduler {
         }
     }
 
+    /** LastError for a specific (possibly parked) thread — async thunk completions land on the issuer, not the running thread. */
+    setThreadLastError(threadId: number, code: number): void {
+        const t = this.threads.get(threadId);
+        if (!t) return;
+        if (t.id === this.currentThreadId) { this.setLastError(code); return; }
+        t.lastError = code >>> 0;
+        if (t.tebAddress > 0) this.tebManager.syncLastError(t.id, code >>> 0);
+    }
+
     getLastError(): number {
         const t = this.getCurrentThread();
         return t ? t.lastError >>> 0 : (this.process?.lastError ?? 0);
