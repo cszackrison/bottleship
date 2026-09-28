@@ -775,6 +775,7 @@ export class DDrawPresenter implements RenderActive {
             return;
         }
 
+        const pendingMark = textureConverter.pendingDestroyCount;
         const encoder = device.createCommandEncoder();
         textureConverter.convertToTexture(
             encoder,
@@ -790,6 +791,7 @@ export class DDrawPresenter implements RenderActive {
             palette
         );
         queue.submit([encoder.finish()]);
+        textureConverter.destroyPendingAfterSubmit(pendingMark);
 
         // Mark as uploaded
         if (isRenderSurface(surface)) {

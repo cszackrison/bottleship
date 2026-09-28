@@ -1686,10 +1686,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
     /**
      * Destroy temp buffers from GPU path (per-call). Call after queue.submit().
      */
-    destroyPendingAfterSubmit(): void {
-        for (const b of this.pendingDestroyBuffers) b.destroy();
-        this.pendingDestroyBuffers.length = 0;
+    destroyPendingAfterSubmit(from = 0): void {
+        const pending = this.pendingDestroyBuffers;
+        for (let i = from; i < pending.length; i++) pending[i].destroy();
+        pending.length = from;
     }
+
+    /** Mark for destroyPendingAfterSubmit(mark) when a caller submits its own encoder while the executor's frame encoder may still hold earlier temps. */
+    get pendingDestroyCount(): number { return this.pendingDestroyBuffers.length; }
 
     /**
      * Destroy resources
