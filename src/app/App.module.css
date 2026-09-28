@@ -1,19 +1,15 @@
-/* Emulator app shell */
+/* Full-window game: the canvas is scaled as large as the window allows at the guest's aspect ratio. */
 .app {
-  --fullscreen-aspect-w: 4;
-  --fullscreen-aspect-h: 3;
-  --fullscreen-integer-w: 640px;
-  --fullscreen-integer-h: 480px;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
+  width: 100vw;
   overflow: hidden;
+  background: #000;
 }
 
 .app__panel {
-  flex: 1;
   position: relative;
-  min-height: 0;
+  width: 100%;
+  height: 100%;
   background: #000;
   display: flex;
   align-items: center;
@@ -22,16 +18,13 @@
 
 .app__canvas {
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
+  width: min(100vw, calc(100dvh * var(--guest-w) / var(--guest-h)));
   height: auto;
+  aspect-ratio: var(--guest-w) / var(--guest-h);
   background: #000;
   touch-action: none;
   position: relative;
   z-index: 1;
-  /* The canvas is programmatically focused (tabIndex -1) to capture keyboard input;
-     suppress the browser focus ring — it's just visual noise around the game. */
   outline: none;
 }
 .app__canvas:focus,
@@ -39,15 +32,12 @@
   outline: none;
 }
 
-.app__canvas--pixelated {
-  image-rendering: pixelated;
-}
-
 .app__warning {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 5;
   padding: 10px 12px 10px 14px;
   border-radius: 12px;
   background: #2c1518;
@@ -57,134 +47,35 @@
   line-height: 1.4;
 }
 
-/* Fullscreen */
-.app__panel:fullscreen,
-.app__panel:-webkit-full-screen {
-  padding: 0;
-  border: none;
-  border-radius: 0;
-  background: #000;
+.app__notice {
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #0a0a0a;
+  color: #e8e8e8;
+  padding: 24px;
+  box-sizing: border-box;
 }
 
-.app--fullscreen-aspect-lock .app__panel:fullscreen .app__canvas,
-.app--fullscreen-aspect-lock .app__panel:-webkit-full-screen .app__canvas {
-  width: min(100vw, calc(100dvh * (var(--fullscreen-aspect-w) / var(--fullscreen-aspect-h)))) !important;
-  height: min(100dvh, calc(100vw * (var(--fullscreen-aspect-h) / var(--fullscreen-aspect-w)))) !important;
-  min-height: 0 !important;
-  border-radius: 0;
+.app__notice-card {
+  max-width: 620px;
+  border: 1px solid #3a1919;
+  background: #171010;
+  border-radius: 12px;
+  padding: 28px;
 }
 
-.app--fullscreen-aspect-free .app__panel:fullscreen .app__canvas,
-.app--fullscreen-aspect-free .app__panel:-webkit-full-screen .app__canvas {
-  width: 100vw !important;
-  height: 100dvh !important;
-  min-height: 0 !important;
-  border-radius: 0;
+.app__notice-card h1 {
+  margin: 0 0 14px;
+  font-size: 1.3rem;
+  color: #ff8f8f;
 }
 
-.app--fullscreen-integer .app__panel:fullscreen .app__canvas,
-.app--fullscreen-integer .app__panel:-webkit-full-screen .app__canvas {
-  width: var(--fullscreen-integer-w) !important;
-  height: var(--fullscreen-integer-h) !important;
-}
-
-.app__panel:fullscreen .app__warning,
-.app__panel:-webkit-full-screen .app__warning {
-  display: none;
-}
-
-/* Emulator top bar */
-.emu-topbar {
-  display: flex;
-  align-items: center;
-  height: 44px;
-  padding: 0 12px;
-  background: linear-gradient(180deg, var(--ink-800), var(--ink-900));
-  border-bottom: 1px solid var(--line-1);
-  flex-shrink: 0;
-  gap: 8px;
-  z-index: 10;
-}
-
-.emu-game-title {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: center;
-  min-width: 0;
-}
-
-.emu-game-name {
-  font-family: var(--font-display);
-  font-size: 0.92rem;
-  font-weight: 700;
-  color: var(--fg-1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.emu-game-subtitle {
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  color: var(--amber);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  white-space: nowrap;
-}
-
-.emu-topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.emu-topbar-actions .emu-topbar-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.emu-topbar-btn {
-  height: 30px;
-  padding: 0 12px;
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--fg-2);
-  font-family: var(--font-body);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease);
-  white-space: nowrap;
-}
-
-.emu-topbar-btn:hover:not(:disabled) {
-  background: var(--surf-2);
-  border-color: var(--line-2);
-  color: var(--fg-1);
-}
-
-.emu-topbar-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-.emu-btn-active {
-  background: var(--surf-cyan);
-  border-color: var(--cyan);
-  color: var(--cyan-soft);
-}
-
-.emu-back-btn {
-  color: var(--fg-3);
+.app__notice-card p {
+  margin: 0;
+  color: #d3c2c2;
+  line-height: 1.45;
 }
 
 /* Download / startup progress overlay */
@@ -204,16 +95,6 @@
 .loading-overlay--done {
   opacity: 0;
   pointer-events: none;
-}
-
-.loading-overlay__cover {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: center top;
-  filter: blur(40px) brightness(0.15) saturate(0.5);
-  transform: scale(1.15);
-  z-index: 0;
 }
 
 .loading-overlay__content {
@@ -347,115 +228,6 @@
 
 .loading-overlay__step.is-done .loading-overlay__step-label { opacity: 0.85; }
 .loading-overlay__step.is-active .loading-overlay__step-label { opacity: 1; color: var(--fg-1); }
-
-/* Cover placeholder */
-.emu-cover-placeholder {
-  position: absolute;
-  inset: 0;
-  background-size: cover;
-  background-position: center top;
-  filter: blur(32px) brightness(0.2) saturate(0.7);
-  transform: scale(1.12);
-  z-index: 0;
-}
-
-/* Info strip below canvas */
-.emu-info-strip {
-  flex-shrink: 0;
-  height: 40px;
-  background: var(--ink-1000);
-  border-top: 1px solid var(--line-1);
-  display: flex;
-  align-items: center;
-  padding: 0 20px;
-  gap: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  overflow: hidden;
-}
-
-.emu-info-name {
-  color: var(--fg-2);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.emu-info-subtitle {
-  color: var(--amber);
-}
-
-.emu-info-desc {
-  flex: 1;
-  color: var(--fg-3);
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 24px;
-}
-
-.emu-info-hints {
-  color: var(--fg-4);
-  white-space: nowrap;
-  font-size: var(--fs-2xs);
-  flex-shrink: 0;
-}
-
-.emu-info-gog {
-  color: var(--amber);
-  white-space: nowrap;
-  font-size: var(--fs-2xs);
-  flex-shrink: 0;
-  margin-right: 16px;
-  text-decoration: none;
-  opacity: 0.85;
-}
-
-.emu-info-gog:hover {
-  opacity: 1;
-  text-decoration: underline;
-}
-
-/* Hide info strip in fullscreen */
-.app__panel:fullscreen ~ .emu-info-strip,
-.app__panel:-webkit-full-screen ~ .emu-info-strip {
-  display: none;
-}
-
-/* App details grid (exit overlay) */
-.app__details {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: #0f1620;
-  border: 1px solid #1f2a3a;
-}
-
-.detail__label {
-  display: block;
-  font-size: 12px;
-  color: #94a4b8;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.detail__value {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-@media (max-width: 720px) {
-  .app {
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
-  }
-
-  .app__canvas {
-    height: 52dvh;
-    min-height: 220px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .loading-overlay__bar-wrap.is-indeterminate .loading-overlay__bar { animation: none; width: 60%; }

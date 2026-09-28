@@ -63,14 +63,8 @@ bun tools/wgb.ts patch-manifest game.wgb …  # (alias: pm)
 
 ## Bringing your own game
 
-BottleShip is the engine; you supply games you legally own. Three ways to get a game in:
-
-1. **Load File…** in the UI — drop a `.wgb`, a raw game folder, or an installer.
-2. **GOG installer → ROM.** Drag in a GOG Inno Setup installer; BottleShip parses it
-   in-browser (a built-in Inno reader plus a WASM LZMA decoder) and builds a bundle. GOG's
-   DRM-free installers make this a clean path — buy the game, drop the installer, play. See
-   [`docs/gog-import.md`](gog-import.md).
-3. **`make-wgb`** from a game directory you already have, as above.
+Build the StarCraft bundle from a game directory you own with **`make-wgb`** (above) and place it at
+`public/apps/starcraft_demo.wgb`.
 
 ## A note on distribution
 

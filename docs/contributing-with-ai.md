@@ -47,8 +47,7 @@ bun tools/harness.ts up        # cold start: dev server + log server + browser
 
 Run your game, file a **Compatibility report** issue with the harness output: how far it
 gets (boots / menu / in-game / completable), the bundle parameters that got it there, and a
-`report()` snapshot if it breaks. Zero systems knowledge required; every report grows the
-[compatibility matrix](compatibility.md).
+`report()` snapshot if it breaks. Zero systems knowledge required.
 
 ### Tier 1 — diagnosis
 

@@ -5,17 +5,9 @@ Public dev/build tooling. Game-specific RE/debug one-offs live in
 
 ## Bundles (WGB)
 
+- **netplay-relay.ts** — WebSocket relay for IPX netplay (`bun run dev:netplay`, default port 3002).
 - **make-wgb.ts** — high-level bundle creator: raw game dir + flags → manifest/registry/packed `.wgb` in one step.
 - **wgb.ts** — unified WGB archive tool: list / cat / extract / replace / manifest / set-manifest / patch-manifest.
-- **gog-to-wgb.ts** — convert a GOG Inno Setup installer into a `.wgb` bundle (built-in WASM parser, `--innoextract` fallback).
-- **iso-to-wgb.ts** — build a `.wgb` from an ISO/BIN+CUE disc image.
-- **bin2iso.ts** — convert a MODE1/2352 raw CD `.bin` to a plain 2048-byte/sector `.iso`.
-- **unshield-extract.ts** — extract InstallShield cabinet (`data1.cab`) installers.
-- **inno-inspect.ts** — inspect an Inno Setup installer's headers/file table.
-- **patch-wgb-vram.ts** — patch the VRAM override of an existing bundle.
-- **patch-wgb-gog-script-registry.ts** — regenerate a bundle's registry from its GOG install script.
-- **migrate-wgb-v2.ts** — migrate v1 bundles to the v2 manifest (gameId) format.
-- **export-registry.ps1** — export a real Windows registry subtree into `registry.json` seed format.
 
 ## Debugging & profiling
 
@@ -48,4 +40,3 @@ Public dev/build tooling. Game-specific RE/debug one-offs live in
 
 - **build-ffmpeg-decoder/** — WASM video-decoder build (`build:video-decoder`).
 - **build-unpack-streaming/** — Rust→WASM installer-unpack build (`build:unpack-streaming`).
-- **video-test/** — standalone decoder test page (no emulator dependency).

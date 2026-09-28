@@ -193,9 +193,8 @@ files; see make-wgb/wgb.ts below):
     Bundles served from `public/` resolve under `/apps/...`; point `public/apps/external-wgb`
     at a local WGB drop-folder (e.g. a symlink), so `window.loadApp('/apps/external-wgb/<name>.wgb')`
     loads a file dropped there. `loadApp` posts `{type:'load_bundle', url}` to the worker.
-  - Registered game by id: `?game=<id>` (the host's game registry; `?game=dev` is the special
-    bare/no-game id that just exposes `window.loadApp`/`worker`/`dbg`).
-  - Local file (no server path): the host UI "Load File..." button → posts `load_bundle {blob}`.
+  - Default page (no `?game=dev`): auto-loads StarCraft (`/apps/starcraft_demo.wgb`, GAME_BUNDLE_URL
+    in src/app/App.tsx). `?room=<name>` joins a netplay room on the relay (`bun run dev:netplay`, :3002).
   - Bundle behavior is driven by its manifest (RAM, OS, resolution, registry, `skipVideo`, args).
     Create/patch bundles with `make-wgb` / `wgb.ts` (below) — never hand-edit registry.json.
 
@@ -275,37 +274,28 @@ Tooling:
     Replaces pack-wgb, repack-wgb, extract-wgb, list-wgb. Store-only ZIP, own parser.
     Usage: bun tools/wgb.ts <command> <archive.wgb> [args...]
     Aliases: ls=list, x=extract, pm=patch-manifest.
-  - patch-wgb-vram — VRAM override patcher for existing bundles.
   - build-ffmpeg-decoder/ — separate WASM build; rebuild only when decoder_api.c or build.sh change.
 
 Archive / installer formats — USE OUR OWN READERS, never `apt install` a third-party unpacker.
-  We ship a self-hosted, browser-safe format stack in `packages/formats/src/` (reusable core parsers)
-  with thin Bun CLI wrappers in `tools/`. Reach for these BEFORE 7-Zip/cabextract/unshield/innoextract
+  We ship a self-hosted, browser-safe format stack in `packages/formats/src/` (reusable core parsers,
+  used by the worker's bundle loader). Reach for these BEFORE 7-Zip/cabextract/unshield/innoextract
   or a hand-rolled one-off parser — the whole point is that `.wgb` bring-up needs no external native tool
   and works headless (CI, cron, no root). Coverage:
     - zip/          — store + deflate ZIP (also the `.wgb` container).
     - cab/          — Microsoft Cabinet (`MSCF`), incl. one APPENDED to a Win32 SFX stub
-                      ("PackageForTheWeb" self-extractors). CLI: `tools/cab-extract.ts`. NONE + MSZIP.
+                      ("PackageForTheWeb" self-extractors). NONE + MSZIP.
     - installshield/— InstallShield Cabinet (`ISc(`, v5 AND v6+) — the `data1.hdr` + `data{N}.cab`
                       layout behind most 1998–2003 game installers. Handles chunked raw-deflate,
                       de-obfuscation, LINK_PREV dedup, volume-split files, MD5 verify.
-                      CLI: `tools/unshield-extract.ts <data1.hdr> <out> [--list]`.
                       (NOT the same as MSCF — 7-Zip/cabextract cannot read `ISc(`.)
-    - inno/         — Inno Setup headers (LZMA1/2 via the Rust WASM backend). CLI: `tools/inno-inspect.ts`;
-                      end-to-end GOG installer → bundle: `tools/gog-to-wgb.ts`.
+    - inno/         — Inno Setup headers (LZMA1/2 via the Rust WASM backend).
     - freearc/      — FreeArc (`.arc`, srep+LZMA) used by some repacks.
-    - iso/          — ISO9660 + BIN/CUE disc images. CLI: `tools/iso-to-wgb.ts`; `tools/bin2iso.ts`.
+    - iso/          — ISO9660 + BIN/CUE disc images.
     - unpack/       — shared native codec backend (LZMA1/LZMA2/srep) built from the Rust crate
                       `tools/build-unpack-streaming` → `public/unpack-streaming.wasm`, plus the
                       dependency-free primitives (RandomAccessSource, Crc32/Md5/Sha1) every reader uses.
-  A WinZip-SFX/PFTW `.exe` is a ZIP/CAB wrapping an InstallShield disk set: unwrap the outer archive
-  (zip/cab), then run `unshield-extract` on the inner `data1.hdr` to get the real game files.
-  New container/compression not covered above? EXTEND this stack (a new `formats/<fmt>` core + a CLI
-  wrapper), don't shell out to a system binary — same discipline as extending the harness: each new
+  New container/compression not covered above? EXTEND this stack (a new `formats/<fmt>` core), don't shell out to a system binary — same discipline as extending the harness: each new
   invariant we hit becomes a durable, self-hosted capability, not an external dependency or a throwaway.
-  The `/repack` skill (`.claude/skills/repack/`) operationalizes the whole installer→`.wgb` flow
-  (which reader for which container, make-wgb usage, and the empty-directory pitfall) — invoke it when
-  packing/repacking a bundle or diagnosing one that boots but won't save.
 
 v86 core (vendor/v86/ — a git submodule; clone with --recurse-submodules):
   - Use bracket notation (this["prop"]) for all properties accessed from TS code.
