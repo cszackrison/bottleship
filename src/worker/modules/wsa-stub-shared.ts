@@ -8,6 +8,10 @@ import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import { Process } from "../core/process";
 import { System } from "../core/system";
 import { AF_IPX, IpxSocket, NSPROTO_IPX, SOCK_DGRAM, WSAEPROTONOSUPPORT, WSAESOCKTNOSUPPORT, threadErrorSink } from "./wsa-ipx";
+import { DgramSocket } from "./wsa-dgram";
+import { IPPROTO_UDP, UdpSocket } from "./wsa-udp";
+import { lanNetwork } from "../net/lan-network";
+import { nodeKey } from "../net/netplay-wire";
 
 /**
  * Faithful `inet_addr` (winsock 1.1 / 2). Parses a dotted-address string into an in_addr.s_addr
@@ -127,7 +131,7 @@ export function writeWsaData(lpWSAData: number, wVersionRequested: number, mem: 
     if (!writeBytes(mem, lpWSAData + WSADATA_DESC_OFF, desc)) return false;
     if (!writeBytes(mem, lpWSAData + WSADATA_STATUS_OFF, status)) return false;
     if (!writeU16(mem, lpWSAData + WSADATA_IMAXSOCKETS_OFF, 32)) return false;
-    if (!writeU16(mem, lpWSAData + WSADATA_IMAXUDPDG_OFF, 32)) return false;
+    if (!writeU16(mem, lpWSAData + WSADATA_IMAXUDPDG_OFF, 65467)) return false;
     if (!writeU32(mem, lpWSAData + WSADATA_LPVENDORINFO_OFF, 0)) return false;
     return true;
 }
@@ -155,6 +159,30 @@ export function writeSockaddrInLoopback(addr: number, portHostOrder: number, mem
 
 const LOOPBACK_HOST_NAME = "localhost";
 const LOOPBACK_ADDR_BYTES = new Uint8Array([127, 0, 0, 1]);
+const HOSTENT_SCRATCH = 128;
+
+/** This machine's name on the virtual LAN (stable for the worker's node). */
+export function localHostName(): string {
+    return `bottleship-${nodeKey(lanNetwork.node).slice(6)}`;
+}
+
+/**
+ * Name → address. The local host name (or "", per gethostbyname semantics) is this node's LAN
+ * address and dotted literals resolve to themselves; there is no DNS, so any other name resolves
+ * to loopback, so callers never dereference NULL.
+ */
+export function resolveHost(name: string): { name: string; addr: Uint8Array } {
+    const host = localHostName();
+    if (!name || name.toLowerCase() === host) return { name: host, addr: lanNetwork.ipv4 };
+    const dotted = /^[0-9.]+$/.test(name) ? parseInetAddr(name) : 0xffffffff;
+    if (dotted !== 0xffffffff) return { name, addr: new Uint8Array([dotted & 0xff, (dotted >>> 8) & 0xff, (dotted >>> 16) & 0xff, dotted >>> 24]) };
+    return { name: LOOPBACK_HOST_NAME, addr: LOOPBACK_ADDR_BYTES };
+}
+
+function resolveAddr(addr: Uint8Array): { name: string; addr: Uint8Array } {
+    const own = lanNetwork.ipv4;
+    return addr.every((b, i) => b === own[i]) ? { name: localHostName(), addr: own } : { name: LOOPBACK_HOST_NAME, addr: LOOPBACK_ADDR_BYTES };
+}
 
 export interface DnsStubs {
     gethostbyname: ThunkImplementation;
@@ -164,53 +192,21 @@ export interface DnsStubs {
 }
 
 /**
- * Deterministic offline DNS: any hostname/address probe resolves to a loopback hostent
- * (no real network in this stub), so callers never dereference NULL. Shared by wsock32
- * and ws2_32 so both DLLs answer identically instead of drifting.
+ * gethostname/gethostbyname/gethostbyaddr/inet_ntoa over the virtual LAN (see resolveHost). Like
+ * real Winsock, the returned hostent lives in one DLL-owned buffer overwritten by the next call.
+ * Shared by wsock32 and ws2_32 so both DLLs answer identically instead of drifting.
  */
 export function createDnsStubs(process: Process, setLastError: (code: number) => void): DnsStubs {
     let hostentAddr = 0;
     let inetNtoaBufAddr = 0;
 
-    const ensureLoopbackHostent = (): number => {
-        if (hostentAddr) return hostentAddr;
-
-        // hostent:
-        //  +0 h_name      (char*)
-        //  +4 h_aliases   (char**)
-        //  +8 h_addrtype  (short)
-        // +10 h_length    (short)
-        // +12 h_addr_list (char**)
-        const hNameAddr = process.memory.alloc(LOOPBACK_HOST_NAME.length + 1, "THUNK_DATA", "rw");
-        const hAliasesAddr = process.memory.alloc(4, "THUNK_DATA", "rw");   // [NULL]
-        const hAddrBytesAddr = process.memory.alloc(4, "THUNK_DATA", "rw"); // 127.0.0.1
-        const hAddrListAddr = process.memory.alloc(8, "THUNK_DATA", "rw");  // [ptr, NULL]
-        const hEntAddr = process.memory.alloc(16, "THUNK_DATA", "rw");
-        if (!hNameAddr || !hAliasesAddr || !hAddrBytesAddr || !hAddrListAddr || !hEntAddr) {
+    const packHostent = (mem: Uint8Array, host: { name: string; addr: Uint8Array }): number => {
+        if (!hostentAddr) hostentAddr = process.memory.alloc(HOSTENT_SCRATCH, "THUNK_DATA", "rw") >>> 0;
+        if (!hostentAddr || packHostentInto(Mem.getView() ?? mem, hostentAddr, HOSTENT_SCRATCH, host.name, host.addr) < 0) {
             setLastError(WSAENETDOWN);
             return 0;
         }
-
-        const nameBytes = new TextEncoder().encode(`${LOOPBACK_HOST_NAME}\0`);
-        if (Mem.writeBytes(hNameAddr, nameBytes) !== nameBytes.length) { setLastError(WSAENETDOWN); return 0; }
-        if (!Mem.writeUint32(hAliasesAddr, 0)) { setLastError(WSAENETDOWN); return 0; }
-        if (Mem.writeBytes(hAddrBytesAddr, LOOPBACK_ADDR_BYTES) !== LOOPBACK_ADDR_BYTES.length) {
-            setLastError(WSAENETDOWN);
-            return 0;
-        }
-        if (!Mem.writeUint32(hAddrListAddr, hAddrBytesAddr) || !Mem.writeUint32(hAddrListAddr + 4, 0)) {
-            setLastError(WSAENETDOWN);
-            return 0;
-        }
-        if (!Mem.writeUint32(hEntAddr, hNameAddr) ||
-            !Mem.writeUint32(hEntAddr + 4, hAliasesAddr) ||
-            Mem.writeBytes(hEntAddr + 8, new Uint8Array([AF_INET, 0, 4, 0])) !== 4 ||
-            !Mem.writeUint32(hEntAddr + 12, hAddrListAddr)) {
-            setLastError(WSAENETDOWN);
-            return 0;
-        }
-
-        hostentAddr = hEntAddr >>> 0;
+        setLastError(0);
         return hostentAddr;
     };
 
@@ -226,46 +222,24 @@ export function createDnsStubs(process: Process, setLastError: (code: number) =>
         const namePtr = args[0] >>> 0;
         const len = (args[1] ?? 0) | 0;
         if (!namePtr || len <= 0) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
-
-        const maxWrite = Math.max(0, len - 1);
-        const hostBytes = new TextEncoder().encode(LOOPBACK_HOST_NAME);
-        const toCopy = hostBytes.subarray(0, Math.min(hostBytes.length, maxWrite));
-        if (toCopy.length > 0 && Mem.writeBytes(namePtr, toCopy) !== toCopy.length) {
-            setLastError(WSAEFAULT);
-            return SOCKET_ERROR;
-        }
-        if (Mem.writeBytes(namePtr + toCopy.length, new Uint8Array([0])) !== 1) {
-            setLastError(WSAEFAULT);
-            return SOCKET_ERROR;
-        }
-
+        const hostBytes = new TextEncoder().encode(`${localHostName()}\0`);
+        if (hostBytes.length > len) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+        if (Mem.writeBytes(namePtr, hostBytes) !== hostBytes.length) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
         setLastError(0);
         return 0;
     };
 
     const gethostbyname: ThunkImplementation = (_ctx, mem, args) => {
         const namePtr = args[0] >>> 0;
-        if (!namePtr) { setLastError(WSAEFAULT); return 0; }
-
-        const name = Marshaler.readString(mem, namePtr).trim();
-        if (!name) { setLastError(WSAHOST_NOT_FOUND); return 0; }
-
-        const ptr = ensureLoopbackHostent();
-        if (!ptr) { setLastError(WSAENETDOWN); return 0; }
-        setLastError(0);
-        return ptr;
+        return packHostent(mem, resolveHost(namePtr ? Marshaler.readString(mem, namePtr).trim() : ""));
     };
 
-    const gethostbyaddr: ThunkImplementation = (_ctx, _mem, args) => {
+    const gethostbyaddr: ThunkImplementation = (_ctx, mem, args) => {
         const addrPtr = args[0] >>> 0;
         const len = (args[1] ?? 0) | 0;
         const addrType = (args[2] ?? 0) | 0;
-        if (!addrPtr || len < 4 || addrType !== AF_INET) { setLastError(WSAHOST_NOT_FOUND); return 0; }
-
-        const ptr = ensureLoopbackHostent();
-        if (!ptr) { setLastError(WSAENETDOWN); return 0; }
-        setLastError(0);
-        return ptr;
+        if (!addrPtr || len < 4 || addrType !== AF_INET || addrPtr + 4 > mem.length) { setLastError(WSAHOST_NOT_FOUND); return 0; }
+        return packHostent(mem, resolveAddr(mem.slice(addrPtr, addrPtr + 4)));
     };
 
     const inetNtoa: ThunkImplementation = (_ctx, _mem, args) => {
@@ -462,9 +436,9 @@ function writeFdSetSockets(mem: Uint8Array, ptr: number, sockets: number[]): boo
 
 /**
  * select(nfds, readfds, writefds, exceptfds, timeout) — nfds is ignored (BSD source compatibility
- * only, per Winsock docs). IPX datagram sockets are readable with a queued datagram and always
- * writable; offline AF_INET stubs never have inbound data but a connected one is writable. With
- * nothing ready and an IPX socket in readfds the caller parks until data, close, or the timeout
+ * only, per Winsock docs). Datagram sockets are readable with a queued datagram and always
+ * writable; offline AF_INET stream stubs never have inbound data but a connected one is writable. With
+ * nothing ready and a datagram socket in readfds the caller parks until data, close, or the timeout
  * (NULL = infinite); offline-only sets return 0 at once since nothing could ever arrive. A socket
  * that isn't valid in any supplied set is a WSAENOTSOCK error for the whole call, per spec.
  */
@@ -487,8 +461,8 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         }
 
         const publish = (m: Uint8Array, fail: (code: number) => void): number => {
-            const readyRead = readSockets.filter((s) => table.ipx(s)?.readable);
-            const readyWrite = writeSockets.filter((s) => table.ipx(s) || table.isConnected(s));
+            const readyRead = readSockets.filter((s) => table.dgram(s)?.readable);
+            const readyWrite = writeSockets.filter((s) => table.dgram(s) || table.isConnected(s));
             if (!writeFdSetSockets(m, readfdsPtr, readyRead) ||
                 !writeFdSetSockets(m, writefdsPtr, readyWrite) ||
                 !writeFdSetSockets(m, exceptfdsPtr, [])) {
@@ -499,11 +473,11 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
             return readyRead.length + readyWrite.length;
         };
 
-        const ipxReaders = readSockets.map((s) => table.ipx(s)).filter((x) => x !== undefined);
-        const anyReady = ipxReaders.some((x) => x.readable) || writeSockets.some((s) => table.ipx(s) || table.isConnected(s));
+        const dgramReaders = readSockets.map((s) => table.dgram(s)).filter((x) => x !== undefined);
+        const anyReady = dgramReaders.some((x) => x.readable) || writeSockets.some((s) => table.dgram(s) || table.isConnected(s));
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
         const timeoutMs = timeoutPtr ? view.getInt32(timeoutPtr, true) * 1000 + view.getInt32(timeoutPtr + 4, true) / 1000 : Infinity;
-        if (anyReady || ipxReaders.length === 0 || timeoutMs <= 0) return publish(mem, setLastError);
+        if (anyReady || dgramReaders.length === 0 || timeoutMs <= 0) return publish(mem, setLastError);
 
         const onError = threadErrorSink();
         return new Promise<number>((resolve) => {
@@ -517,7 +491,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
                 for (const u of unsubs) u();
                 resolve(publish(Mem.getView() ?? mem, onError));
             };
-            for (const r of ipxReaders) unsubs.push(r.onReadable(finish));
+            for (const r of dgramReaders) unsubs.push(r.onReadable(finish));
             if (Number.isFinite(timeoutMs)) timer = setTimeout(finish, timeoutMs);
         });
     };
@@ -650,12 +624,9 @@ export function createAsyncLookupStubs(setLastError: (code: number) => void): As
         const name = namePtr ? Marshaler.readString(mem, namePtr).trim() : "";
         let bytes = 0;
         let error = 0;
-        if (!name) {
-            error = WSAHOST_NOT_FOUND;
-        } else {
-            bytes = packHostentInto(mem, buf, buflen, LOOPBACK_HOST_NAME, LOOPBACK_ADDR_BYTES);
-            if (bytes < 0) { bytes = 0; error = WSAENOBUFS; }
-        }
+        const host = resolveHost(name);
+        bytes = packHostentInto(mem, buf, buflen, host.name, host.addr);
+        if (bytes < 0) { bytes = 0; error = WSAENOBUFS; }
         postAsyncLookupCompletion(hWnd, wMsg, task, bytes, error);
         setLastError(0);
         return task;
@@ -672,10 +643,11 @@ export function createAsyncLookupStubs(setLastError: (code: number) => void): As
         const task = makeAsyncTaskHandle();
         let bytes = 0;
         let error = 0;
-        if (!addrPtr || len < 4 || addrType !== AF_INET) {
+        if (!addrPtr || len < 4 || addrType !== AF_INET || addrPtr + 4 > mem.length) {
             error = WSAHOST_NOT_FOUND;
         } else {
-            bytes = packHostentInto(mem, buf, buflen, LOOPBACK_HOST_NAME, LOOPBACK_ADDR_BYTES);
+            const host = resolveAddr(mem.slice(addrPtr, addrPtr + 4));
+            bytes = packHostentInto(mem, buf, buflen, host.name, host.addr);
             if (bytes < 0) { bytes = 0; error = WSAENOBUFS; }
         }
         postAsyncLookupCompletion(hWnd, wMsg, task, bytes, error);
@@ -800,19 +772,20 @@ export const WSAENOBUFS = 10055;
 interface StubSocket {
     connected: boolean;
     nonBlocking: boolean;
-    ipx?: IpxSocket;
+    dgram?: DgramSocket;
 }
 
 /**
- * Process socket table. AF_INET sockets are deterministic offline stubs (connect succeeds, no
- * data ever arrives); AF_IPX datagram sockets are real, routed over the virtual IPX network.
+ * Process socket table. Datagram sockets (AF_IPX and AF_INET/UDP) are real, routed over the
+ * virtual LAN; AF_INET stream sockets are deterministic offline stubs (connect succeeds, no data
+ * ever arrives).
  */
 export class WsaSocketTable {
     private nextId = 1;
     private sockets = new Map<number, StubSocket>();
 
     reset(): void {
-        for (const sock of this.sockets.values()) sock.ipx?.close();
+        for (const sock of this.sockets.values()) sock.dgram?.close();
         this.nextId = 1;
         this.sockets.clear();
     }
@@ -823,26 +796,34 @@ export class WsaSocketTable {
         return id;
     }
 
-    /** socket(af, type, protocol): IPX datagram sockets are real; everything else is the offline stub. */
+    /** socket(af, type, protocol): IPX and UDP datagram sockets are real; everything else is the offline stub. */
     create(af: number, type: number, protocol: number): { s: number; err: number } {
+        if (af === AF_INET && type === SOCK_DGRAM) {
+            if (protocol !== 0 && protocol !== IPPROTO_UDP) return { s: INVALID_SOCKET, err: WSAEPROTONOSUPPORT };
+            return { s: this.add(new UdpSocket()), err: 0 };
+        }
         if (af !== AF_IPX) return { s: this.socket(), err: 0 };
         if (type !== SOCK_DGRAM) return { s: INVALID_SOCKET, err: WSAESOCKTNOSUPPORT };
         if (protocol !== 0 && (protocol < NSPROTO_IPX || protocol > NSPROTO_IPX + 255)) return { s: INVALID_SOCKET, err: WSAEPROTONOSUPPORT };
-        const id = this.nextId++;
         const ipx = new IpxSocket();
         if (protocol > NSPROTO_IPX) ipx.ptype = protocol - NSPROTO_IPX;
-        this.sockets.set(id, { connected: false, nonBlocking: false, ipx });
-        return { s: id, err: 0 };
+        return { s: this.add(ipx), err: 0 };
     }
 
-    ipx(s: number): IpxSocket | undefined {
-        return this.sockets.get(s >>> 0)?.ipx;
+    dgram(s: number): DgramSocket | undefined {
+        return this.sockets.get(s >>> 0)?.dgram;
+    }
+
+    private add(dgram: DgramSocket): number {
+        const id = this.nextId++;
+        this.sockets.set(id, { connected: false, nonBlocking: false, dgram });
+        return id;
     }
 
     closesocket(s: number): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
-        sock.ipx?.close();
+        sock.dgram?.close();
         this.sockets.delete(s >>> 0);
         return 0;
     }
@@ -921,9 +902,9 @@ export class WsaSocketTable {
                 : null;
             const on = view ? view.getUint32(argp, true) : (Mem.readUint32(argp) ?? 0);
             sock.nonBlocking = on !== 0;
-            if (sock.ipx) sock.ipx.nonBlocking = on !== 0;
-        } else if (cmd === FIONREAD && argp && sock.ipx) {
-            if (!writeU32(mem, argp, sock.ipx.pendingBytes)) return SOCKET_ERROR;
+            if (sock.dgram) sock.dgram.nonBlocking = on !== 0;
+        } else if (cmd === FIONREAD && argp && sock.dgram) {
+            if (!writeU32(mem, argp, sock.dgram.pendingBytes)) return SOCKET_ERROR;
         } else if (argp) {
             if (mem) {
                 const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -972,8 +953,8 @@ export function makeSocketExports(
         connect: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.connect(mem, args[1] >>> 0, args[2] | 0));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.connect(mem, args[1] >>> 0, args[2] | 0));
             const ret = table.connect(s);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
@@ -981,8 +962,8 @@ export function makeSocketExports(
         bind: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.bind(mem, args[1] >>> 0, args[2] | 0));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.bind(mem, args[1] >>> 0, args[2] | 0));
             setLastError(0);
             return table.bind(s);
         },
@@ -1002,8 +983,8 @@ export function makeSocketExports(
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return ipx.peer ? publish(ipx.sendto(mem, args[1] >>> 0, len, 0, 0)) : publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
+            const dg = table.dgram(s);
+            if (dg) return dg.peer ? publish(dg.sendto(mem, args[1] >>> 0, len, 0, 0)) : publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
             const ret = table.send(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
@@ -1011,10 +992,10 @@ export function makeSocketExports(
         recv: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) {
-                if (!ipx.peer) return publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
-                return ipx.recvfrom(mem, args[1] >>> 0, args[2] | 0, 0, 0, threadErrorSink());
+            const dg = table.dgram(s);
+            if (dg) {
+                if (!dg.peer) return publish({ ret: SOCKET_ERROR, err: WSAENOTCONN });
+                return dg.recvfrom(mem, args[1] >>> 0, args[2] | 0, 0, 0, threadErrorSink());
             }
             const ret = table.recv(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
@@ -1023,8 +1004,8 @@ export function makeSocketExports(
         recvfrom: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return ipx.recvfrom(mem, args[1] >>> 0, args[2] | 0, args[4] >>> 0, args[5] >>> 0, threadErrorSink());
+            const dg = table.dgram(s);
+            if (dg) return dg.recvfrom(mem, args[1] >>> 0, args[2] | 0, args[4] >>> 0, args[5] >>> 0, threadErrorSink());
             const ret = table.recvfrom(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
@@ -1033,8 +1014,8 @@ export function makeSocketExports(
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.sendto(mem, args[1] >>> 0, len, args[4] >>> 0, args[5] | 0));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.sendto(mem, args[1] >>> 0, len, args[4] >>> 0, args[5] | 0));
             const ret = table.sendto(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
@@ -1042,16 +1023,16 @@ export function makeSocketExports(
         setsockopt: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.setsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] | 0));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.setsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] | 0));
             setLastError(0);
             return table.setsockopt(s);
         },
         getsockopt: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.getsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] >>> 0));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.getsockopt(mem, args[1] | 0, args[2] | 0, args[3] >>> 0, args[4] >>> 0));
             setLastError(0);
             return table.getsockopt(s);
         },
@@ -1073,8 +1054,8 @@ export function makeSocketExports(
             const name = args[1] >>> 0;
             const namelenPtr = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.getpeername(mem, name, namelenPtr));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.getpeername(mem, name, namelenPtr));
             if (!table.isConnected(s)) {
                 setLastError(WSAENOTCONN);
                 return SOCKET_ERROR;
@@ -1108,8 +1089,8 @@ export function makeSocketExports(
             const name = args[1] >>> 0;
             const namelenPtr = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ipx = table.ipx(s);
-            if (ipx) return publish(ipx.getsockname(mem, name, namelenPtr));
+            const dg = table.dgram(s);
+            if (dg) return publish(dg.getsockname(mem, name, namelenPtr));
             if (!name || !namelenPtr) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
@@ -1150,7 +1131,7 @@ export function makeSocketExports(
             if (code === FIONBIO && inBuf) {
                 table.ioctl(s, FIONBIO, inBuf, mem);
             } else if (code === FIONREAD && outBuf && outLen >= 4) {
-                if (!writeU32(mem, outBuf, table.ipx(s)?.pendingBytes ?? 0)) {
+                if (!writeU32(mem, outBuf, table.dgram(s)?.pendingBytes ?? 0)) {
                     setLastError(WSAEFAULT);
                     return SOCKET_ERROR;
                 }

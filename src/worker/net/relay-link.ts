@@ -1,12 +1,12 @@
 /**
- * WebSocket transport from this worker's IpxNetwork to the netplay relay (tools/netplay-relay.ts).
+ * WebSocket transport from this worker's LanNetwork to the netplay relay (tools/netplay-relay.ts).
  * Frames sent before the socket opens are queued (bounded); a dropped connection reconnects with
  * backoff and re-joins under the same node, so in-flight sockets keep their addresses.
  */
 
 import { Logger, LogCategory } from "../core/logger";
 import { encodeJoin } from "./netplay-wire";
-import { IpxNetwork, NetTransport, ipxNetwork } from "./ipx-network";
+import { LanNetwork, NetTransport, lanNetwork } from "./lan-network";
 
 const MAX_PENDING = 256;
 
@@ -16,7 +16,7 @@ export class RelayLink implements NetTransport {
     private closed = false;
     private retryMs = 500;
 
-    constructor(private readonly url: string, private readonly net: IpxNetwork) { this.open(); }
+    constructor(private readonly url: string, private readonly net: LanNetwork) { this.open(); }
 
     send(frame: Uint8Array<ArrayBuffer>): void {
         if (this.ws?.readyState === WebSocket.OPEN) { this.ws.send(frame); return; }
@@ -52,5 +52,5 @@ export class RelayLink implements NetTransport {
 }
 
 export function configureNetplay(url: string | null): void {
-    ipxNetwork.attach(url ? new RelayLink(url, ipxNetwork) : null);
+    lanNetwork.attach(url ? new RelayLink(url, lanNetwork) : null);
 }

@@ -4,6 +4,7 @@
  *   Join     client→relay  [JOIN][node:6]
  *   Datagram both ways     [DGRAM][proto][node:6][dstPort:2 BE][srcPort:2 BE][payload…]
  *
+ * proto: PROTO_IPX (ports = IPX socket numbers) or PROTO_UDP (ports = UDP ports).
  * In a client→relay datagram `node` is the destination (FF×6 = broadcast); the relay rewrites it
  * to the sender's node before forwarding, so a received datagram always names its source.
  */
@@ -11,6 +12,7 @@
 export const WIRE_JOIN = 1;
 export const WIRE_DGRAM = 2;
 export const PROTO_IPX = 0;
+export const PROTO_UDP = 1;
 export const DGRAM_HEADER = 12;
 export const NODE_LEN = 6;
 export const BROADCAST_NODE = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);

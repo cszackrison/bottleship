@@ -18,7 +18,7 @@ import { faultRecorder } from "../../core/memory/fault-recorder";
 import { stubRegistry } from "../../core/diagnostics/stub-registry";
 import { getProcAddressRegistry } from "../../core/diagnostics/get-proc-address-registry";
 import { apiCensus } from "../../core/diagnostics/api-census";
-import { ipxNetwork } from "../../net/ipx-network";
+import { lanNetwork } from "../../net/lan-network";
 import { nodeKey } from "../../net/netplay-wire";
 
 export function registerStateCommands(svc: HarnessService): void {
@@ -55,7 +55,7 @@ export function registerStateCommands(svc: HarnessService): void {
     });
 
     /** netplay() — this machine's IPX node, whether a relay link is attached, and datagram counters. */
-    svc.register("netplay", () => ({ node: nodeKey(ipxNetwork.node), connected: ipxNetwork.connected, ...ipxNetwork.stats }));
+    svc.register("netplay", () => ({ node: nodeKey(lanNetwork.node), connected: lanNetwork.connected, ...lanNetwork.stats }));
 
     /** Quick CPU register snapshot (subset of state(['cpu'])). */
     svc.register("cpu", () => serializeCpu());

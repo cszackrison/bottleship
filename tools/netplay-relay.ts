@@ -1,22 +1,22 @@
 #!/usr/bin/env bun
 /**
  * netplay-relay — the "LAN switch" for BottleShip netplay. Each browser tab is one node on a
- * virtual IPX network; tabs that join the same room share a broadcast domain. The relay only
+ * virtual IPX/UDP network; tabs that join the same room share a broadcast domain. The relay only
  * forwards datagrams (src/worker/net/netplay-wire.ts), stamping the sender's node on each one.
  *
  *   bun tools/netplay-relay.ts [--port 3002]
  *
  * Players connect to ws://<host>:3002/netplay/<room>; the page derives that from its own URL:
- *   http://<host>:5174/?game=dev&load=/apps/starcraft_demo.wgb&room=<room>
+ *   http://<host>:5174/?room=<room>
  */
 
 import type { ServerWebSocket } from "bun";
-import { NODE_LEN, WIRE_DGRAM, WIRE_JOIN, isBroadcastNode, nodeKey } from "../src/worker/net/netplay-wire";
+import { DGRAM_HEADER, NODE_LEN, WIRE_DGRAM, WIRE_JOIN, isBroadcastNode, nodeKey } from "../src/worker/net/netplay-wire";
 
 const portArg = process.argv.indexOf("--port");
 const PORT = Number(portArg > 0 ? process.argv[portArg + 1] : process.env.NETPLAY_PORT ?? 3002);
 const MAX_PEERS = 16;
-const MAX_FRAME = 2048;
+const MAX_FRAME = DGRAM_HEADER + 65535;
 
 interface Peer { room: string; node: Uint8Array | null; key: string }
 const rooms = new Map<string, Map<string, ServerWebSocket<Peer>>>();
@@ -68,7 +68,7 @@ const server = Bun.serve<Peer>({
                 if (frame[0] === WIRE_JOIN && frame.length === 1 + NODE_LEN) join(ws, frame.subarray(1));
                 return;
             }
-            if (frame[0] === WIRE_DGRAM && frame.length >= 12) forward(ws, frame);
+            if (frame[0] === WIRE_DGRAM && frame.length >= DGRAM_HEADER) forward(ws, frame);
         },
         close(ws) {
             const room = rooms.get(ws.data.room);

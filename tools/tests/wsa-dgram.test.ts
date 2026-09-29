@@ -1,15 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { IpxNetwork, NetTransport } from "../../src/worker/net/ipx-network";
+import { LanNetwork, NetTransport } from "../../src/worker/net/lan-network";
 import { BROADCAST_NODE, NODE_LEN, decodeDatagram } from "../../src/worker/net/netplay-wire";
 import { AF_IPX, IpxSocket, SOCKADDR_IPX_SIZE, SOL_SOCKET, SO_BROADCAST, WSAEACCES, WSAEADDRINUSE, WSAEINTR, WSAEMSGSIZE, WSAEWOULDBLOCK, NSPROTO_IPX, IPX_ADDRESS } from "../../src/worker/modules/wsa-ipx";
 import { WsaSocketTable } from "../../src/worker/modules/wsa-stub-shared";
+import { AF_INET, SOCKADDR_IN_SIZE, UdpSocket } from "../../src/worker/modules/wsa-udp";
+import { WSAEADDRNOTAVAIL } from "../../src/worker/modules/wsa-dgram";
 import { Mem } from "../../src/worker/core/memory/mem-accessor";
 
 /** Two machines on one LAN segment, joined by a relay-equivalent in-memory switch. */
-function lan(): [IpxNetwork, IpxNetwork] {
-    const a = new IpxNetwork(new Uint8Array([2, 0, 0, 0, 0, 1]));
-    const b = new IpxNetwork(new Uint8Array([2, 0, 0, 0, 0, 2]));
-    const link = (from: IpxNetwork, to: IpxNetwork): NetTransport => ({
+function lan(): [LanNetwork, LanNetwork] {
+    const a = new LanNetwork(new Uint8Array([2, 0, 0, 0, 0, 1]));
+    const b = new LanNetwork(new Uint8Array([2, 0, 0, 0, 0, 2]));
+    const link = (from: LanNetwork, to: LanNetwork): NetTransport => ({
         send(frame) {
             const dg = decodeDatagram(frame)!;
             const dst = dg.node;
@@ -103,10 +105,71 @@ describe("IPX datagram sockets", () => {
         const t = new WsaSocketTable();
         const ipx = t.create(AF_IPX, 2, NSPROTO_IPX);
         expect(ipx.err).toBe(0);
-        expect(t.ipx(ipx.s)).toBeInstanceOf(IpxSocket);
+        expect(t.dgram(ipx.s)).toBeInstanceOf(IpxSocket);
         expect(t.create(AF_IPX, 5, NSPROTO_IPX).err).not.toBe(0);
         const tcp = t.create(2, 1, 6);
-        expect(t.ipx(tcp.s)).toBeUndefined();
+        expect(t.dgram(tcp.s)).toBeUndefined();
         expect(t.closesocket(ipx.s)).toBe(0);
+    });
+});
+
+function sockaddrIn(m: Uint8Array, at: number, ip: number[], port: number): number {
+    const v = new DataView(m.buffer);
+    v.setUint16(at, AF_INET, true);
+    v.setUint16(at + 2, port, false);
+    m.set(ip, at + 4);
+    return at;
+}
+
+describe("UDP datagram sockets", () => {
+    test("a node's IPv4 address is 10.<node[3..5]>", () => {
+        const [na] = lan();
+        expect([...na.ipv4]).toEqual([10, 0, 0, 1]);
+    });
+
+    test("subnet broadcast needs SO_BROADCAST and arrives from the sender's 10.x address", async () => {
+        const [na, nb] = lan();
+        const m = mem();
+        const tx = new UdpSocket(na), rx = new UdpSocket(nb);
+        expect(rx.bind(m, sockaddrIn(m, 0x100, [0, 0, 0, 0], 6112), SOCKADDR_IN_SIZE).err).toBe(0);
+        m.set([1, 2, 3], 0x400);
+        const bcast = sockaddrIn(m, 0x200, [10, 255, 255, 255], 6112);
+        expect(tx.sendto(m, 0x400, 3, bcast, SOCKADDR_IN_SIZE).err).toBe(WSAEACCES);
+        new DataView(m.buffer).setInt32(0x300, 1, true);
+        tx.setsockopt(m, SOL_SOCKET, SO_BROADCAST, 0x300, 4);
+        expect(tx.sendto(m, 0x400, 3, sockaddrIn(m, 0x200, [255, 255, 255, 255], 6112), SOCKADDR_IN_SIZE).ret).toBe(3);
+        new DataView(m.buffer).setInt32(0x600, SOCKADDR_IN_SIZE, true);
+        const n = await rx.recvfrom(m, 0x500, 16, 0x700, 0x600, () => {});
+        expect(n).toBe(3);
+        expect([...m.subarray(0x704, 0x708)]).toEqual([10, 0, 0, 1]);
+    });
+
+    test("unicast to a peer's 10.x address, reply to the source address", async () => {
+        const [na, nb] = lan();
+        const m = mem();
+        const a = new UdpSocket(na), b = new UdpSocket(nb);
+        b.bind(m, sockaddrIn(m, 0x100, [0, 0, 0, 0], 6112), SOCKADDR_IN_SIZE);
+        m.set([9], 0x400);
+        expect(a.sendto(m, 0x400, 1, sockaddrIn(m, 0x200, [10, 0, 0, 2], 6112), SOCKADDR_IN_SIZE).ret).toBe(1);
+        new DataView(m.buffer).setInt32(0x600, SOCKADDR_IN_SIZE, true);
+        expect(await b.recvfrom(m, 0x500, 16, 0x700, 0x600, () => {})).toBe(1);
+        expect(b.sendto(m, 0x400, 1, 0x700, SOCKADDR_IN_SIZE).ret).toBe(1);
+        expect(await a.recvfrom(m, 0x500, 16, 0, 0, () => {})).toBe(1);
+    });
+
+    test("off-LAN destinations are accepted and dropped; binding a foreign address fails", () => {
+        const [na] = lan();
+        const m = mem();
+        const s = new UdpSocket(na);
+        expect(s.bind(m, sockaddrIn(m, 0x100, [192, 168, 1, 5], 0), SOCKADDR_IN_SIZE).err).toBe(WSAEADDRNOTAVAIL);
+        expect(s.sendto(m, 0x400, 4, sockaddrIn(m, 0x200, [8, 8, 8, 8], 53), SOCKADDR_IN_SIZE).ret).toBe(4);
+        expect(na.stats.sent).toBe(0);
+    });
+
+    test("socket table routes AF_INET/SOCK_DGRAM to UDP sockets", () => {
+        const t = new WsaSocketTable();
+        const udp = t.create(AF_INET, 2, 17);
+        expect(t.dgram(udp.s)).toBeInstanceOf(UdpSocket);
+        expect(t.create(AF_INET, 2, 6).err).not.toBe(0);
     });
 });
