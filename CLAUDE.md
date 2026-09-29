@@ -193,7 +193,7 @@ files; see make-wgb/wgb.ts below):
     Bundles served from `public/` resolve under `/apps/...`; point `public/apps/external-wgb`
     at a local WGB drop-folder (e.g. a symlink), so `window.loadApp('/apps/external-wgb/<name>.wgb')`
     loads a file dropped there. `loadApp` posts `{type:'load_bundle', url}` to the worker.
-  - Default page (no `?game=dev`): auto-loads StarCraft (`/apps/starcraft_demo.wgb`, GAME_BUNDLE_URL
+  - Default page (no `?game=dev`): auto-loads StarCraft: Brood War (`/apps/starcraft_retail.wgb`, GAME_BUNDLE_URL
     in src/app/App.tsx). `?room=<name>` joins a netplay room on the relay (`bun run dev:netplay`, :3002).
   - Bundle behavior is driven by its manifest (RAM, OS, resolution, registry, `skipVideo`, args).
     Create/patch bundles with `make-wgb` / `wgb.ts` (below) — never hand-edit registry.json.

@@ -18,8 +18,8 @@ bun run dev          # game at http://localhost:5174
 bun run dev:netplay  # multiplayer relay on :3002
 ```
 
-The game bundle is not in git: put `starcraft_demo.wgb` in `public/apps/`
-(build one from a game folder with `bun tools/make-wgb.ts <game-dir> public/apps/starcraft_demo.wgb --exe StarCraft.exe`).
+The game bundle is not in git: put `starcraft_retail.wgb` (StarCraft + Brood War) in `public/apps/`
+(build one from a game folder with `bun tools/make-wgb.ts <game-dir> public/apps/starcraft_retail.wgb --exe StarCraft.exe`).
 
 ## Multiplayer
 

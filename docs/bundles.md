@@ -64,7 +64,7 @@ bun tools/wgb.ts patch-manifest game.wgb …  # (alias: pm)
 ## Bringing your own game
 
 Build the StarCraft bundle from a game directory you own with **`make-wgb`** (above) and place it at
-`public/apps/starcraft_demo.wgb`.
+`public/apps/starcraft_retail.wgb`.
 
 ## A note on distribution
 

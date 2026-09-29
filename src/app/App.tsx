@@ -13,8 +13,8 @@ import WebGPUErrorOverlay from "./WebGPUErrorOverlay";
 import { ensurePersistentStorageRequested } from "../storage-manager";
 import { DEFAULT_QUALITY } from "../worker/core/quality-config";
 
-const GAME_NAME = "StarCraft";
-const GAME_BUNDLE_URL = "/apps/starcraft_demo.wgb";
+const GAME_NAME = "StarCraft: Brood War";
+const GAME_BUNDLE_URL = "/apps/starcraft_retail.wgb";
 const GUEST_MOUSE_COORDS = true;
 
 const INPUT_BUFFER_SIZE = 1024;
