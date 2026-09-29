@@ -107,13 +107,12 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
     let peekCalls = 0;
     let peekHits = 0;
 
-    type TimerSkipReason = 'v86' | 'async' | 'callbackBusy';
-
     interface TimerState {
         wheelTimerId: number;
         hWnd: number;
         timerId: number;
         timerFunc: number;
+        ownerThreadId: number;
         pendingTicks: number;
     }
 
@@ -218,19 +217,6 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
         return;
     }
 
-    function registerTimerSkip(state: TimerState, reason: TimerSkipReason): void {
-        if (reason === 'v86') timerDiag.skippedV86++;
-        else if (reason === 'async') timerDiag.skippedAsync++;
-        else timerDiag.skippedCallbackBusy++;
-
-        if (timerDiagConfig.queueSkippedMessageTimers) {
-            state.pendingTicks++;
-            timerDiag.pendingQueued++;
-            return;
-        }
-        timerDiag.pendingDropped++;
-    }
-
     function postTimerMessages(system: System, state: TimerState, basePosts: number): void {
         let toPost = basePosts;
         if (state.pendingTicks > 0) {
@@ -249,7 +235,7 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
         }
 
         for (let i = 0; i < toPost; i++) {
-            system.windowManager.postMessage(state.hWnd, WM_TIMER, state.timerId, state.timerFunc);
+            system.windowManager.postMessage(state.hWnd, WM_TIMER, state.timerId, state.timerFunc, 0, 0, state.hWnd ? 0 : state.ownerThreadId);
             timerDiag.posted++;
         }
         if (toPost > 0) {
@@ -1183,53 +1169,16 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
             hWnd,
             timerId,
             timerFunc: lpTimerFunc >>> 0,
+            ownerThreadId: System.getInstance().scheduler.getCurrentThreadId() ?? 0,
             pendingTicks: 0,
         };
 
+        // Callback timers too: Windows never interrupts a thread to run a TimerProc — the
+        // tick is a WM_TIMER (lParam = TimerProc) that DispatchMessage calls on the pumping thread.
         const trigger = () => {
             const system = System.getInstance();
             if (system.isExiting) return;
             timerDiag.ticks++;
-
-            if (lpTimerFunc) {
-                // Callback-mode (lpTimerFunc != 0): invoking the x86 TimerProc mutates CPU
-                // state, so it requires a running CPU and no in-flight async/callback chain.
-                const v86 = system.process?.v86;
-                const isRunning = v86?.is_running?.() ?? false;
-                const callbackManager = system.process?.dispatcher.callbackManager;
-                const canInvoke = isRunning &&
-                                  !system.process?.dispatcher.hasActiveAsyncThunks() &&
-                                  callbackManager?.canAcceptDeferredCallback();
-
-                if (canInvoke) {
-                    // Note: Must use forceSyntheticReturnEip so after the TimerProc returns,
-                    // x86 resumes at the exact EIP it was at when the scheduler timer fired, with ESP preserved.
-                    // void CALLBACK TimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
-                    timerDiag.callbackInvoked++;
-                    callbackManager!.invokeCallback(
-                        lpTimerFunc,
-                        [hWnd, WM_TIMER, timerId, TimeService.getInstance().nowMs() | 0],
-                        0,
-                        undefined,
-                        false,
-                        'SetTimer_timerProc',
-                        undefined,
-                        { forceSyntheticReturnEip: true }
-                    );
-                    maybeLogTimerDiag();
-                    return;
-                }
-
-                // Fallback: post WM_TIMER to wake WaitMessage/GetMessage.
-                // This is faithful: callback timers still generate WM_TIMER in Windows.
-                registerTimerSkip(timerState, !isRunning ? 'v86' : (system.process?.dispatcher.hasActiveAsyncThunks() ? 'async' : 'callbackBusy'));
-                postTimerMessages(system, timerState, 1);
-                maybeLogTimerDiag();
-                return;
-            }
-
-            // Message-mode (lpTimerFunc == 0): posting WM_TIMER is pure message-queue
-            // manipulation, valid even when v86 is stopped.
             postTimerMessages(system, timerState, 1);
             maybeLogTimerDiag();
         };
