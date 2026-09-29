@@ -178,6 +178,7 @@ export default defineConfig({
     host: true,
     port: 5174,
     strictPort: true,
+    allowedHosts: [".trycloudflare.com"],
     ...useSsl ? { https: true } : {},
     hmr: false,
     headers: coopCoepHeaders

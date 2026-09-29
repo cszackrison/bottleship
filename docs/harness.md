@@ -17,6 +17,9 @@ bun tools/harness.ts shot      # screenshot the (offscreen) canvas
 `up` starts the dev server and a log server, launches Chrome with the flags the engine needs
 (including an autoplay policy so audio unlocks without a user gesture — audio-gated games stall
 silently otherwise), opens the bare emulator page, and waits until everything is healthy.
+`BS_CHROME` overrides the browser binary; `BS_CHROME_ARGS` appends extra launch flags (needed
+when a distro browser keeps WebGPU behind `brave://flags`, e.g. Brave on Linux:
+`BS_CHROME_ARGS="--enable-unsafe-webgpu --enable-features=Vulkan --enable-webgpu-developer-features --ignore-gpu-blocklist"`).
 
 In the browser console the same capability is on `window.__BS__.harness`.
 

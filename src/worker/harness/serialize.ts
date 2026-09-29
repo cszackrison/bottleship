@@ -287,6 +287,19 @@ export function faultSnapshot(): unknown {
 }
 
 /** Read up to 4 stack args (esp+4..esp+0x10) + return address (esp) — for apiBreak. */
+/** A NUL-terminated printable ANSI string at `ptr`, else null — lets API-break snapshots show path/name args. */
+function peekAnsi(mem: Uint8Array | null | undefined, ptr: number): string | null {
+    if (!mem || ptr < 0x10000 || ptr >= mem.length) return null;
+    let s = "";
+    for (let i = 0; i < 260 && ptr + i < mem.length; i++) {
+        const c = mem[ptr + i];
+        if (c === 0) return s.length >= 2 ? s : null;
+        if (c < 0x20 || c > 0x7e) return null;
+        s += String.fromCharCode(c);
+    }
+    return null;
+}
+
 export function readCallSnapshot(name: string, eip: number, esp: number): unknown {
     const mem = guestMem();
     const r = (off: number): number => {
@@ -321,6 +334,7 @@ export function readCallSnapshot(name: string, eip: number, esp: number): unknow
         caller: r(0),
         callerSym: symbolize(r(0)),
         args: [r(4), r(8), r(12), r(16)],
+        argStrs: [r(4), r(8), r(12), r(16)].map((p) => peekAnsi(mem, p)),
         threadId,
         lastThunks: recent,
         backtrace,

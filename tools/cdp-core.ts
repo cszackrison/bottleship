@@ -23,6 +23,9 @@ const CHROME_PATH = process.env.BS_CHROME ?? (IS_MAC
     : IS_LINUX
       ? (LINUX_CHROMES.map((b) => Bun.which(b)).find(Boolean) ?? "google-chrome")
       : "C:/Program Files/Google/Chrome/Application/chrome.exe");
+/** Extra launch flags (space-separated), e.g. WebGPU experiments a distro browser
+ *  (Brave) keeps behind brave://flags — mirrors them onto the harness instance. */
+const CHROME_ARGS = (process.env.BS_CHROME_ARGS ?? "").split(/\s+/).filter(Boolean);
 const DEFAULT_PROFILE = IS_MAC || IS_LINUX
     ? `${process.env.HOME}/.bottleship-cdp-profile`
     : `${process.cwd()}/tmp/cdp-profile`;
@@ -59,6 +62,7 @@ export async function launchOrAttachChrome(opts: { port?: number; profile?: stri
         "--disable-features=Translate",
         ...(autoplay ? ["--autoplay-policy=no-user-gesture-required"] : []),
         "--window-size=1400,1050",
+        ...CHROME_ARGS,
         "about:blank",
     ];
     if (IS_MAC) {

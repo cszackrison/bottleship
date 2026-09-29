@@ -7,6 +7,7 @@
  *   bun tools/wgb.ts cat      <archive.wgb> <entry>                — print entry to stdout
  *   bun tools/wgb.ts extract  <archive.wgb> <entry> <output-path>  — extract entry to file
  *   bun tools/wgb.ts replace  <archive.wgb> <entry> <input-path>   — replace entry from file
+ *   bun tools/wgb.ts remove   <archive.wgb> <entry>[,<entry>...]   — drop entries
  *   bun tools/wgb.ts manifest <archive.wgb>                        — pretty-print manifest.json
  *   bun tools/wgb.ts set-manifest <archive.wgb> <manifest.json>    — replace manifest from file
  *   bun tools/wgb.ts patch-manifest <archive.wgb> <json-path> <value> — set a single JSON path
@@ -400,6 +401,21 @@ function cmdReplace(wgbPath: string, entryName: string, inputPath: string, outpu
     writeOverride(wgbPath, entryName, newData, outputPath);
 }
 
+function cmdRemove(wgbPath: string, entryNames: string[], outputPath?: string) {
+    const dest = outputPath ?? wgbPath;
+    const tmp = `${dest}.wgbtmp`;
+    const result = withArchive(wgbPath, (fd, _size, entries) => {
+        const drop = new Set(entryNames.map((n) => {
+            const e = findEntry(entries, n);
+            if (!e) { console.error(`Entry not found: ${n}`); process.exit(1); }
+            return e.name;
+        }));
+        return rebuildStreaming(fd, entries.filter((e) => !drop.has(e.name)), tmp, () => null);
+    });
+    renameSync(tmp, dest);
+    console.log(`Removed ${entryNames.join(", ")} -> ${dest} [${result.entries} entries, ${result.bytes} bytes]`);
+}
+
 function cmdManifest(wgbPath: string) {
     withArchive(wgbPath, (fd, _size, entries) => {
         const entry = findEntry(entries, "manifest.json");
@@ -477,6 +493,7 @@ Usage:
   bun tools/wgb.ts cat           <archive.wgb> <entry>
   bun tools/wgb.ts extract       <archive.wgb> <entry> <output>
   bun tools/wgb.ts replace       <archive.wgb> <entry> <input> [output]
+  bun tools/wgb.ts remove        <archive.wgb> <entry>[,<entry>...] [output]
   bun tools/wgb.ts repack        <archive.wgb>                    — rewrite as Store-only (decompress Deflate entries)
   bun tools/wgb.ts manifest      <archive.wgb>
   bun tools/wgb.ts set-manifest  <archive.wgb> <manifest.json>
@@ -505,6 +522,11 @@ switch (cmd) {
     case "replace":
         if (!args[0] || !args[1] || !args[2]) { console.error("Usage: wgb.ts replace <archive> <entry> <input> [output]"); process.exit(1); }
         cmdReplace(args[0], args[1], args[2], args[3]);
+        break;
+    case "remove":
+    case "rm":
+        if (!args[0] || !args[1]) { console.error("Usage: wgb.ts remove <archive> <entry>[,<entry>...] [output]"); process.exit(1); }
+        cmdRemove(args[0], args[1].split(","), args[2]);
         break;
     case "repack":
         if (!args[0]) { console.error("Usage: wgb.ts repack <archive>"); process.exit(1); }
