@@ -31,5 +31,9 @@ export const tapi32Module: ModuleDescriptor = {
         makeFunc("lineAnswer", 3),
         makeFunc("lineMakeCall", 5),
         makeFunc("lineGetID", 6),
+        makeFunc("lineGetCallStatus", 2),
+        makeFunc("lineDrop", 3),
+        makeFunc("lineDeallocateCall", 1),
+        makeFunc("lineTranslateAddress", 7),
     ],
 };

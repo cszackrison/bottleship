@@ -7,7 +7,9 @@ import { Process } from "../core/process";
 import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import { Mem } from "../core/memory/mem-accessor";
 
+const LINEERR_BADDEVICEID = 0x80000002;
 const LINEERR_INVALAPPHANDLE = 0x80000004;
+const LINEERR_INVALCALLHANDLE = 0x80000012;
 const LINEERR_NODEVICE = 0x8000000b;
 const LINEERR_OPERATIONUNAVAIL = 0x8000001d;
 const LINEERR_STRUCTURETOOSMALL = 0x80000028;
@@ -96,6 +98,11 @@ export class Tapi32 implements IModule {
             if (lphCall) Mem.writeUint32(lphCall, this.nextCall++);
             return LINEERR_OPERATIONUNAVAIL;
         };
+
+        this.exports["lineGetCallStatus"] = () => LINEERR_INVALCALLHANDLE;
+        this.exports["lineDrop"] = () => LINEERR_INVALCALLHANDLE;
+        this.exports["lineDeallocateCall"] = () => LINEERR_INVALCALLHANDLE;
+        this.exports["lineTranslateAddress"] = () => LINEERR_BADDEVICEID;
     }
 
     reset(): void {
