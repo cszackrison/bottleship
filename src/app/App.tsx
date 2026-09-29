@@ -124,34 +124,6 @@ function endInputWrite(inputView: Int32Array): void {
 
 // Win32 MessageBox button tables + the dev-mode modal live in ./MessageBoxModal.tsx.
 
-// Launch overlay: coarse stage stepper (Engine → Fetch → Boot) + the detailed status line.
-// `index` is the stage a given worker phase belongs to; everything before it reads "done".
-const LOAD_STAGES = [
-  { id: "engine", label: "Engine" },
-  { id: "fetch", label: "Fetch" },
-  { id: "boot", label: "Boot" },
-] as const;
-function loadPhaseStageIndex(phase: string): number {
-  switch (phase) {
-    case "init": return 0;
-    case "downloading": case "caching": case "installing": case "loading": case "prefetch": return 1;
-    case "starting": case "booting": default: return 2;
-  }
-}
-function loadPhaseStatus(phase: string, gameName: string): string {
-  switch (phase) {
-    case "init": return "Booting emulator";
-    case "downloading": return "Downloading";
-    case "caching": return "Caching to disk";
-    case "installing": return "Installing";
-    case "prefetch": return "Preloading assets";
-    case "loading": return "Preparing";
-    case "starting": return "Starting";
-    case "booting": return `Starting ${gameName}`;
-    default: return "Loading";
-  }
-}
-
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -1651,31 +1623,13 @@ export default function App() {
     <div className={s["app"]}>
       <section className={s["app__panel"]} ref={panelRef}>
         <canvas ref={canvasRef} tabIndex={-1} className={s["app__canvas"]} style={{ ["--guest-w" as string]: guestResolution.width, ["--guest-h" as string]: guestResolution.height } as React.CSSProperties} />
-        {loadingProgress && !errorMessage && !exitInfo && (() => {
-          const activeStage = loadPhaseStageIndex(loadingProgress.phase);
-          return (
-            <div className={cx(s, "loading-overlay", loadingProgress.fadingOut && "loading-overlay--done")}>
-              <div className={s["loading-overlay__content"]}>
-                <div className={s["loading-overlay__title"]}>{GAME_NAME}</div>
-                <ol className={s["loading-overlay__steps"]} aria-hidden>
-                  {LOAD_STAGES.map((stage, i) => (
-                    <li key={stage.id} className={cx(s, "loading-overlay__step", i < activeStage ? "is-done" : i === activeStage ? "is-active" : false)}>
-                      <span className={s["loading-overlay__step-dot"]} />
-                      <span className={s["loading-overlay__step-label"]}>{stage.label}</span>
-                    </li>
-                  ))}
-                </ol>
-                <div className={cx(s, "loading-overlay__bar-wrap", loadingProgress.indeterminate && "is-indeterminate")}>
-                  <div className={s["loading-overlay__bar"]} style={loadingProgress.indeterminate ? undefined : { width: `${loadingProgress.percent}%` }} />
-                </div>
-                <div className={s["loading-overlay__label"]}>
-                  {loadPhaseStatus(loadingProgress.phase, GAME_NAME)}
-                  {loadingProgress.label ? ` · ${loadingProgress.label}` : ""}
-                </div>
-              </div>
+        {loadingProgress && !errorMessage && !exitInfo && (
+          <div className={cx(s, "loading-overlay", loadingProgress.fadingOut && "loading-overlay--done")}>
+            <div className={cx(s, "loading-overlay__bar-wrap", loadingProgress.indeterminate && "is-indeterminate")}>
+              <div className={s["loading-overlay__bar"]} style={loadingProgress.indeterminate ? undefined : { width: `${loadingProgress.percent}%` }} />
             </div>
-          );
-        })()}
+          </div>
+        )}
         {!sabAvailable || !isolated ? (
           <div className={s["app__warning"]}>
             <p>SharedArrayBuffer requires COOP/COEP headers and cross-origin isolation.</p>
