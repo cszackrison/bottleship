@@ -28,6 +28,7 @@ export class WaitEngine {
     registerWait(thread: Thread): void {
         const info = thread.waitInfo;
         if (!info) return;
+        if (info.msgWakeResult !== undefined) this.messageWaiters.add(thread.id);
 
         switch (info.reason) {
             case WaitReason.SLEEP:
@@ -67,6 +68,7 @@ export class WaitEngine {
     unregisterWait(thread: Thread): void {
         const info = thread.waitInfo;
         if (!info) return;
+        if (info.msgWakeResult !== undefined) this.messageWaiters.delete(thread.id);
 
         switch (info.reason) {
             case WaitReason.SLEEP:

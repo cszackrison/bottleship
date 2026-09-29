@@ -1865,9 +1865,10 @@ export class Scheduler {
     wakeMessageWaiters(targetThreadId?: number): void {
         for (const thread of this.threads.values()) {
             if (thread.state !== ThreadState.WAITING) continue;
-            if (thread.waitInfo?.reason !== WaitReason.MESSAGE) continue;
+            const info = thread.waitInfo;
+            if (info?.reason !== WaitReason.MESSAGE && info?.msgWakeResult === undefined) continue;
             if (targetThreadId !== undefined && thread.id !== targetThreadId) continue;
-            this.wakeThread(thread, 1); // TRUE — WaitMessage return value
+            this.wakeThread(thread, info.reason === WaitReason.MESSAGE ? 1 : info.msgWakeResult!);
         }
     }
 
@@ -1953,6 +1954,38 @@ export class Scheduler {
         // Must NOT return WAIT_OBJECT_0 to the sync thunk — the thread is WAITING with a
         // saved post-return context; stub RET would resume guest code on a parked thread
         // (SS2 boot: T2 WFSO + T1 continues → stack corruption → 0x7c07).
+        return WAIT_BLOCKED_NO_SWITCH;
+    }
+
+    /** MsgWaitForMultipleObjects(Ex): wait on `handles` (may be empty) OR queued input for this thread,
+     *  which returns WAIT_OBJECT_0 + handles.length. The caller checks the queue before calling. */
+    msgWaitForObjectsWithContext(
+        handles: number[], waitAll: boolean, timeoutMs: number, alertable: boolean,
+        returnAddr: number, postReturnEsp: number,
+        callerCtx: { ecx: number; edx: number; ebx: number; ebp: number; esi: number; edi: number; eflags: number }
+    ): number {
+        const thread = this.getCurrentThread();
+        if (!thread) return WAIT_FAILED;
+
+        const resolved = this.resolveHandles(handles, thread);
+        if (resolved.length > 0) {
+            if (!this.syncObjects.validateHandles(resolved)) return WAIT_FAILED;
+            const decision = this.syncObjects.checkWait(resolved, waitAll, thread.id, (tid) => this.threads.get(tid) ?? null);
+            if (decision.ready) { this.syncObjects.consumeWait(decision, thread.id); return decision.result; }
+        }
+        if (alertable && thread.apcQueue.length > 0) return WAIT_IO_COMPLETION;
+        if (timeoutMs === 0) return WAIT_TIMEOUT;
+        if (!isValidGuestEip(returnAddr)) {
+            Logger.error(LogCategory.THREAD, `msgWaitForObjectsWithContext: invalid returnAddr=0x${returnAddr.toString(16)} T${thread.id} — returning WAIT_FAILED`);
+            return WAIT_FAILED;
+        }
+
+        const context = createPostReturnContext(returnAddr, postReturnEsp, callerCtx, WAIT_OBJECT_0);
+        const reason = waitAll ? WaitReason.MULTIPLE_OBJECTS : WaitReason.SINGLE_OBJECT;
+        const timeout = timeoutMs === INFINITE ? null : timeoutMs;
+        this.blockThread(thread, reason, resolved, waitAll, timeout, alertable, 0, context, false, false, false, waitAll ? undefined : WAIT_OBJECT_0 + resolved.length);
+        if (this.hasOtherRunnableThreads(thread.id)) this.requestSwitch();
+        else this.requestYieldToHost(this.computeYieldMs(timeoutMs === INFINITE ? 50 : timeoutMs), "msgWait");
         return WAIT_BLOCKED_NO_SWITCH;
     }
 
@@ -3647,6 +3680,7 @@ export class Scheduler {
         srwWantExclusive = false,
         boolReturn = false,
         cvReacquireCs = false,
+        msgWakeResult?: number,
     ): void {
         // Create timeout timer if needed
         let timerId = 0;
@@ -3668,6 +3702,7 @@ export class Scheduler {
             srwWantExclusive,
             boolReturn: boolReturn || undefined,
             cvReacquireCs: cvReacquireCs || undefined,
+            msgWakeResult,
         };
 
         this.transitionTo(thread, ThreadState.WAITING, waitInfo, context);

@@ -214,6 +214,7 @@ export const user32Module: ModuleDescriptor = {
         makeFunc("SetClassLongA", 3),
         makeFunc("SetClassLongW", 3),
         makeFunc("MsgWaitForMultipleObjects", 5),
+        makeFunc("MsgWaitForMultipleObjectsEx", 5),
         // Window state
         makeFunc("IsWindowEnabled", 1),
         makeFunc("IsWindowUnicode", 1),

@@ -117,6 +117,8 @@ export interface WaitInfo {
     /** SleepConditionVariableCS: on wake, re-acquire the critical section at csAddress
      *  (instead of the SRW lock) and map WAIT_OBJECT_0→1, WAIT_TIMEOUT→0. */
     cvReacquireCs?: boolean;
+    /** MsgWaitForMultipleObjects: also woken by queued input, returning this value (WAIT_OBJECT_0 + nCount). */
+    msgWakeResult?: number;
 }
 
 // ─── APC ────────────────────────────────────────────────────────────────────────

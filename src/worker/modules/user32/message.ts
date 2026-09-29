@@ -7,9 +7,10 @@
 import { ThunkImplementation, FastPathImplementation, ThunkResult, X86Context } from '../../core/thunking/thunk-dispatcher';
 import { Logger, LogCategory } from '../../core/logger';
 import { Marshaler } from '../../core/memory/marshaler';
+import { Mem } from '../../core/memory/mem-accessor';
 import { System } from '../../core/system';
 import { TimeService } from '../../runtime/time';
-import { TimerKind } from '../../core/scheduler/types';
+import { TimerKind, WAIT_TIMEOUT, WAIT_BLOCKED_NO_SWITCH } from '../../core/scheduler/types';
 import { getWindowByHandle } from './window';
 import { hypercallDataManager } from '../../core/cpu/hypercall-data';
 import { installHook, uninstallHook, getHooksOfType, getNextHookInChain, hasHooksOfType, pushActiveHook, popActiveHook, currentActiveHook, WH_KEYBOARD, WH_GETMESSAGE, WH_CBT, HC_ACTION, HC_NOREMOVE } from './hooks';
@@ -735,6 +736,35 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
         // Thread is WAITING(MESSAGE); park at spin loop until postMessage wakes it.
         return { value: 1, blockedNoSwitch: true, stackCleanup: 0 };
     };
+
+    const MWMO_WAITALL = 0x1, MWMO_ALERTABLE = 0x2;
+    const msgWait = (ctx: X86Context, nCount: number, pHandles: number, waitAll: boolean, ms: number, alertable: boolean, argBytes: number): ThunkResult | number => {
+        const system = System.getInstance();
+        const sched = system.scheduler;
+        if (nCount > 63 || (nCount > 0 && pHandles === 0)) { sched.setLastError(87); return 0xFFFFFFFF; }
+        const handles: number[] = [];
+        for (let i = 0; i < nCount; i++) handles.push(Mem.readUint32(pHandles + i * 4) ?? 0);
+
+        system.inputManager.poll(true);
+        const tid = sched.getCurrentThreadId();
+        const inputReady = system.windowManager.hasMessages(0, 0, tid);
+        if (inputReady && !waitAll) {
+            const r = sched.msgWaitForObjectsWithContext(handles, false, 0, false, 0, 0, ctx);
+            return r === WAIT_TIMEOUT ? nCount : r;
+        }
+
+        const returnAddr = Mem.readUint32(ctx.esp >>> 0) ?? 0;
+        const r = sched.msgWaitForObjectsWithContext(handles, waitAll, ms, alertable, returnAddr, (ctx.esp + 4 + argBytes) >>> 0,
+            { ecx: ctx.ecx, edx: ctx.edx, ebx: ctx.ebx, ebp: ctx.ebp, esi: ctx.esi, edi: ctx.edi, eflags: ctx.eflags });
+        if (r === WAIT_BLOCKED_NO_SWITCH) return { value: 0, blockedNoSwitch: true, stackCleanup: argBytes };
+        return r >>> 0;
+    };
+
+    exports['MsgWaitForMultipleObjects'] = (ctx, mem, args) =>
+        msgWait(ctx, args[0] >>> 0, args[1] >>> 0, args[2] !== 0, args[3] >>> 0, false, 20);
+
+    exports['MsgWaitForMultipleObjectsEx'] = (ctx, mem, args) =>
+        msgWait(ctx, args[0] >>> 0, args[1] >>> 0, (args[4] & MWMO_WAITALL) !== 0, args[2] >>> 0, (args[4] & MWMO_ALERTABLE) !== 0, 20);
 
     exports['WaitForInputIdle'] = (ctx, mem, args) => {
         const hProcess = args[0] >>> 0;
