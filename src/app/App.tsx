@@ -189,10 +189,15 @@ export default function App() {
   const pointerLockedRef   = useRef(false);
   const wantsPointerLockRef = useRef(false);
   const virtualMouseRef    = useRef({ x: 0, y: 0 });
+  const lockMotionRef      = useRef({ avg: 0, vx: 0, vy: 0 });
   // Cooldown after exitPointerLock — browser rejects re-acquire for ~1 frame after exit
   const pointerLockCooldownRef = useRef(false);
-  // Relative-mouse engagement = cursor hidden (ShowCursor) OR ClipCursor confined OR exclusive DInput mouse.
+  // Relative-mouse engagement = ClipCursor confined OR exclusive DInput mouse OR the guest repeatedly
+  // warping a hidden cursor (SetCursorPos mouselook). A hidden cursor alone stays absolute, as on
+  // Windows — games that draw their own cursor (HoMM3) read absolute WM_MOUSE* coords.
   const cursorClippedRef = useRef(false);
+  const cursorWarpedRef = useRef(false);
+  const warpTimesRef = useRef<number[]>([]);
   const mouseCapturedRef = useRef(false);
   // Right Ctrl deliberately released the lock — suppress auto re-acquire until the next canvas click.
   const userReleasedLockRef = useRef(false);
@@ -204,7 +209,7 @@ export default function App() {
   };
 
   const updatePointerLockIntent = () => {
-    const wants = !cursorVisibleRef.current || cursorClippedRef.current || mouseCapturedRef.current;
+    const wants = cursorClippedRef.current || mouseCapturedRef.current || (!cursorVisibleRef.current && cursorWarpedRef.current);
     wantsPointerLockRef.current = wants;
     if (wants) {
       const c = canvasRef.current;
@@ -695,14 +700,12 @@ export default function App() {
       if (event.data?.type === "cursor_visibility") {
         const visible = event.data?.visible !== false;
         cursorVisibleRef.current = visible;
+        if (visible) { cursorWarpedRef.current = false; warpTimesRef.current = []; }
         updateCanvasCursor();
-        // Engage/release pointer-lock on the faithful relative signal (hidden OR clipped).
+        // Showing the cursor ends any hidden-cursor warp mode; re-evaluate pointer-lock intent.
         updatePointerLockIntent();
       }
       if (event.data?.type === "clip_cursor") {
-        // Guest ClipCursor(rect) confines the cursor (relative/captured mouse, e.g. Unreal
-        // SetMouseCapture); ClipCursor(NULL) releases it. Feed it into the same intent as
-        // ShowCursor so confined-but-visible games also engage pointer-lock.
         cursorClippedRef.current = event.data?.clip === true;
         updatePointerLockIntent();
       }
@@ -718,6 +721,17 @@ export default function App() {
         const x = Number(event.data.x) | 0;
         const y = Number(event.data.y) | 0;
         virtualMouseRef.current = { x, y };
+        // Mouselook recenters a hidden cursor every frame; a one-off warp (startup centering) doesn't.
+        if (!cursorVisibleRef.current && !cursorWarpedRef.current) {
+          const now = performance.now();
+          const recent = warpTimesRef.current.filter((t) => now - t < 1000);
+          recent.push(now);
+          warpTimesRef.current = recent;
+          if (recent.length >= 3) {
+            cursorWarpedRef.current = true;
+            updatePointerLockIntent();
+          }
+        }
         if (pointerLockedRef.current && globalInputView) {
           beginInputWrite(globalInputView);
           globalInputView[INPUT_INDEX.mouseX] = x;
@@ -861,8 +875,24 @@ export default function App() {
         const scaleX = width  / Math.max(1, rect.width);
         const scaleY = height / Math.max(1, rect.height);
         const virt   = virtualMouseRef.current;
-        virt.x = Math.max(0, Math.min(width  - 1, virt.x + event.movementX * scaleX));
-        virt.y = Math.max(0, Math.min(height - 1, virt.y + event.movementY * scaleY));
+        // Chrome/Brave on X11 recenter the locked OS cursor and report that warp as one huge
+        // movement back toward the window center (≈ the distance travelled since the last warp,
+        // already delivered in the small events before it). Drop a large jump that dwarfs the
+        // recent motion or reverses its direction; a genuine flick ramps up over several events.
+        const motion = lockMotionRef.current;
+        const mag = Math.max(Math.abs(event.movementX), Math.abs(event.movementY));
+        const reverses = event.movementX * motion.vx + event.movementY * motion.vy < 0;
+        const warpArtifact = mag > 100 && (mag > 4 * motion.avg || reverses);
+        if (warpArtifact) {
+          const bs = ((window as any).__BS__ ??= {});
+          bs.pointerLockWarpsDropped = (bs.pointerLockWarpsDropped ?? 0) + 1;
+        } else {
+          motion.avg = motion.avg * 0.8 + mag * 0.2;
+          motion.vx = motion.vx * 0.7 + event.movementX * 0.3;
+          motion.vy = motion.vy * 0.7 + event.movementY * 0.3;
+          virt.x = Math.max(0, Math.min(width  - 1, virt.x + event.movementX * scaleX));
+          virt.y = Math.max(0, Math.min(height - 1, virt.y + event.movementY * scaleY));
+        }
         beginInputWrite(inputView);
         inputView[INPUT_INDEX.mouseX]  = Math.round(virt.x);
         inputView[INPUT_INDEX.mouseY]  = Math.round(virt.y);
@@ -870,8 +900,10 @@ export default function App() {
         // DirectInput reports RAW device deltas (relative axes), NOT canvas-scaled — feed the
         // accumulator unscaled movementX/Y. The virtual cursor above stays scaled (CSS→guest).
         // (dinputDX/DY are independent atomic accumulators, not part of the seqlock snapshot.)
-        Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX));
-        Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY));
+        if (!warpArtifact) {
+          Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX));
+          Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY));
+        }
         endInputWrite(inputView);
         globalWorker?.postMessage({ type: "input_tick" });
         return;
@@ -956,9 +988,29 @@ export default function App() {
       const inputView = globalInputView;
       if (!inputView) return;
 
+      // The canvas is the guest's whole screen, and a Windows cursor can't leave the screen: pin
+      // the guest cursor to the edge the pointer exited through, so edge-scrolling keeps working
+      // while the real pointer is outside the canvas (or the browser).
+      let pinned = false;
+      if (event) {
+        const rect = canvasRectRef.current ?? canvas.getBoundingClientRect();
+        const space = GUEST_MOUSE_COORDS ? guestResolutionRef.current : resolutionRef.current;
+        const w = Math.max(1, space.width), h = Math.max(1, space.height);
+        const px = Math.round(Math.max(0, Math.min(w - 1, (event.clientX - rect.left) * w / rect.width)));
+        const py = Math.round(Math.max(0, Math.min(h - 1, (event.clientY - rect.top) * h / rect.height)));
+        pinned = px !== inputView[INPUT_INDEX.mouseX] || py !== inputView[INPUT_INDEX.mouseY];
+        if (pinned) {
+          beginInputWrite(inputView);
+          inputView[INPUT_INDEX.mouseX] = px;
+          inputView[INPUT_INDEX.mouseY] = py;
+          endInputWrite(inputView);
+        }
+      }
+
       // Always signal mouse-outside so InputManager can fire WM_MOUSELEAVE
       const insideChanged  = inputView[INPUT_INDEX.mouseInside] !== 0;
       const buttonsChanged = inputView[INPUT_INDEX.buttons] !== 0;
+      if (pinned && !insideChanged && !buttonsChanged) globalWorker?.postMessage({ type: "input_tick" });
       if (insideChanged || buttonsChanged) {
         beginInputWrite(inputView);
         if (insideChanged)  inputView[INPUT_INDEX.mouseInside] = 0;
@@ -1079,7 +1131,7 @@ export default function App() {
       // A deliberate click on the canvas is the re-engage gesture: clear the Right-Ctrl
       // host-release suppression so lock can be re-acquired.
       userReleasedLockRef.current = false;
-      // If cursor is hidden by guest, request pointer lock (user click = valid gesture)
+      // If the guest wants relative mouse, request pointer lock (user click = valid gesture)
       if (wantsPointerLockRef.current && !pointerLockedRef.current) {
         requestPointerLockSafe(canvas);
         // Still forward this click — before pointer lock is acquired, absolute coords
