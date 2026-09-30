@@ -1027,6 +1027,9 @@ export default function App() {
         }
       }
 
+      // Ctrl/Alt+digit are guest hotkeys (control groups); keep the browser from switching tabs.
+      if ((event.ctrlKey || event.altKey) && /^(Digit|Numpad)\d$/.test(event.code)) event.preventDefault();
+
       if (state === 1) void audioEngine?.resume();
 
       // Update pressed keys set and serialize to bitfield
