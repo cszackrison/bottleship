@@ -330,9 +330,22 @@ function nextPowerOfTwo(value: number): number {
     return v > 0 ? v : 1;
 }
 
+const WM_TIMER = 0x0113;
+
+/** Hardware input (keyboard/mouse) and WM_TIMER use the input lane; everything else is posted. */
+function isPostedLane(msg: number): boolean {
+    if (msg >= 0x0100 && msg <= 0x0109) return msg === 0x0102 || msg === 0x0103 || msg === 0x0106 || msg === 0x0107;
+    if (msg >= 0x0200 && msg <= 0x020E) return false;
+    return msg !== WM_TIMER;
+}
+
 export class MessageQueue {
     // Separate queues for different priority
-    private inputQueue = new RingBuffer(QUEUE_SIZE);  // High priority: mouse, keyboard
+    // GetMessage order: posted messages, then hardware input (keyboard/mouse) — so the WM_CHAR a
+    // TranslateMessage posts is retrieved before the WM_KEYUP already queued behind its WM_KEYDOWN.
+    // WM_TIMER stays in the input lane (Windows ranks it below input).
+    private postedQueue = new RingBuffer(QUEUE_SIZE);
+    private inputQueue = new RingBuffer(QUEUE_SIZE);
     private paintPending: Map<number, PendingMessage> = new Map(); // hwnd -> pending paint
 
     // Mouse coalescing - only keep latest per hwnd
@@ -483,7 +496,8 @@ export class MessageQueue {
                 );
                 this.lastMouseMove.delete(hwnd);
             }
-            this.inputQueue.enqueue(hwnd, msg, wParam, lParam, time, ptX, ptY, targetThreadId, keyStatePacked);
+            const lane = isPostedLane(msg) ? this.postedQueue : this.inputQueue;
+            lane.enqueue(hwnd, msg, wParam, lParam, time, ptX, ptY, targetThreadId, keyStatePacked);
         }
         this.drainWaiters();
         return true;
@@ -492,10 +506,10 @@ export class MessageQueue {
     dequeue(msgMin = 0, msgMax = 0, callerThreadId = 0): Message | null {
         const noFilter = msgMin === 0 && msgMax === 0;
 
-        // 1. Input queue (keyboard, buttons, etc)
+        // 1. Posted messages, then hardware input (keyboard, buttons, etc)
         const queued = noFilter
-            ? this.inputQueue.dequeue(callerThreadId)
-            : this.inputQueue.dequeueFiltered(msgMin, msgMax, callerThreadId);
+            ? (this.postedQueue.dequeue(callerThreadId) ?? this.inputQueue.dequeue(callerThreadId))
+            : (this.postedQueue.dequeueFiltered(msgMin, msgMax, callerThreadId) ?? this.inputQueue.dequeueFiltered(msgMin, msgMax, callerThreadId));
         if (queued) {
             this.trackDequeued(queued);
             return queued;
@@ -555,8 +569,8 @@ export class MessageQueue {
         const noFilter = msgMin === 0 && msgMax === 0;
 
         const queued = noFilter
-            ? this.inputQueue.peek(callerThreadId)
-            : this.inputQueue.peekFiltered(msgMin, msgMax, callerThreadId);
+            ? (this.postedQueue.peek(callerThreadId) ?? this.inputQueue.peek(callerThreadId))
+            : (this.postedQueue.peekFiltered(msgMin, msgMax, callerThreadId) ?? this.inputQueue.peekFiltered(msgMin, msgMax, callerThreadId));
         if (queued) {
             return queued;
         }
@@ -601,7 +615,7 @@ export class MessageQueue {
 
     hasMessages(msgMin = 0, msgMax = 0, callerThreadId = 0): boolean {
         const noFilter = msgMin === 0 && msgMax === 0;
-        if (this.inputQueue.hasFiltered(msgMin, msgMax, callerThreadId)) return true;
+        if (this.postedQueue.hasFiltered(msgMin, msgMax, callerThreadId) || this.inputQueue.hasFiltered(msgMin, msgMax, callerThreadId)) return true;
         if (this.lastMouseMove.size > 0 && (noFilter || (WM_MOUSEMOVE >= msgMin && WM_MOUSEMOVE <= msgMax))) {
             for (const pending of this.lastMouseMove.values()) {
                 if (callerThreadId === 0 || pending.targetThreadId === 0 || pending.targetThreadId === callerThreadId) {
@@ -722,17 +736,17 @@ export class MessageQueue {
     removeWindow(hwnd: number): void {
         this.lastMouseMove.delete(hwnd);
         this.paintPending.delete(hwnd);
-        // Drain inputQueue entries for this hwnd by dequeuing all and re-enqueuing non-matching
+        // Drain queued entries for this hwnd by dequeuing all and re-enqueuing non-matching
         // This is O(n) but only called on window destruction, not a hot path
-        const kept: Message[] = [];
-        let msg: Message | null;
-        while ((msg = this.inputQueue.dequeue()) !== null) {
-            if (msg.hwnd !== hwnd) {
-                kept.push(msg);
+        for (const lane of [this.postedQueue, this.inputQueue]) {
+            const kept: Message[] = [];
+            let msg: Message | null;
+            while ((msg = lane.dequeue()) !== null) {
+                if (msg.hwnd !== hwnd) kept.push(msg);
             }
-        }
-        for (const m of kept) {
-            this.inputQueue.enqueue(m.hwnd, m.message, m.wParam, m.lParam, m.time, m.ptX, m.ptY, m.targetThreadId ?? 0, m.keyStatePacked);
+            for (const m of kept) {
+                lane.enqueue(m.hwnd, m.message, m.wParam, m.lParam, m.time, m.ptX, m.ptY, m.targetThreadId ?? 0, m.keyStatePacked);
+            }
         }
     }
 
@@ -741,7 +755,7 @@ export class MessageQueue {
     }
 
     clear(): void {
-        while (this.inputQueue.dequeue()) {
+        while (this.postedQueue.dequeue() || this.inputQueue.dequeue()) {
             // drain
         }
         this.lastMouseMove.clear();

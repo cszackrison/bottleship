@@ -39,7 +39,7 @@ const WM_PAINT = 0x000F;
  * @returns a suspended-callback ThunkResult on success, or null when no callback
  *          manager is available (caller falls back to its default return).
  */
-function invokeGuestWndProcSync(
+export function invokeGuestWndProcSync(
     ctx: X86Context,
     mem: Uint8Array,
     wndProc: number,
@@ -1057,10 +1057,28 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
 
     // VK-to-character mapping for TranslateMessage (US keyboard layout)
     const VK_SHIFT = 0x10;
+    const VK_CONTROL = 0x11;
+    const VK_MENU = 0x12;
     const VK_CAPITAL = 0x14;
+
+    /** ToAscii with Ctrl held (US layout): letters and [\] map to control codes; digits and most
+     *  other keys produce no character, so Ctrl+1 is a bare WM_KEYDOWN (control-group hotkeys). */
+    function ctrlChar(vk: number, shiftDown: boolean): number {
+        if (vk >= 0x41 && vk <= 0x5A) return vk - 0x40;
+        if (vk === 0xDB) return 0x1B;
+        if (vk === 0xDC) return 0x1C;
+        if (vk === 0xDD) return 0x1D;
+        if (vk === 0x36 && shiftDown) return 0x1E;
+        if (vk === 0xBD && shiftDown) return 0x1F;
+        if (vk === 0x08) return 0x7F;
+        if (vk === 0x0D) return 0x0A;
+        if (vk === 0x20) return 0x20;
+        return 0;
+    }
 
     function vkToChar(vk: number, keyStates: Uint8Array): number {
         const shiftDown = (keyStates[VK_SHIFT] & 0x80) !== 0;
+        if (keyStates[VK_CONTROL] & 0x80) return (keyStates[VK_MENU] & 0x80) ? 0 : ctrlChar(vk, shiftDown);
         // CapsLock toggle state: bit 0 of keyState (we approximate with pressed state)
         const capsLock = (keyStates[VK_CAPITAL] & 0x80) !== 0;
         const upper = shiftDown !== capsLock; // XOR: shift or caps, not both
