@@ -16,6 +16,21 @@ const LRU_META_FILE = "_cache-lru.json";
  *  never fills the origin to the brim (saves/overlay writes must keep working). */
 const STAGE_QUOTA_MARGIN = 256 * 1024 * 1024;
 
+/** Server-side byte size via HEAD, else a 1-byte Range probe; null when unreachable/unknown. */
+async function remoteSize(url: string): Promise<number | null> {
+    try {
+        const head = await fetch(url, { method: "HEAD", cache: "no-store" });
+        const len = Number(head.headers.get("content-length") ?? "");
+        if (head.ok && len > 0) return len;
+        const probe = await fetch(url, { headers: { Range: "bytes=0-0" }, cache: "no-store" });
+        try { await probe.body?.cancel(); } catch { /* best-effort */ }
+        const total = probe.headers.get("content-range")?.match(/\/(\d+)\s*$/)?.[1];
+        return probe.status === 206 && total ? Number(total) : null;
+    } catch {
+        return null;
+    }
+}
+
 function urlToCacheKey(url: string): string {
     // "/apps/re-volt.wgb?v=2" → "re-volt.wgb"
     const path = url.split("?")[0];
@@ -470,6 +485,27 @@ export class WgbCache {
      */
     static async openSyncSourceForUrl(url: string): Promise<SyncAccessHandleSource | null> {
         return this.openSyncSourceByKey(urlToCacheKey(url));
+    }
+
+    /**
+     * Like openSyncSourceForUrl, but first checks the cached copy against the server's
+     * size so a rebuilt bundle (same filename, new contents) replaces the stale copy.
+     * Unreachable server → trust the cache, so a cached game still boots offline.
+     */
+    static async openFreshSyncSourceForUrl(url: string): Promise<SyncAccessHandleSource | null> {
+        const dir = await this.getCacheDir();
+        if (!dir) return null;
+        const key = urlToCacheKey(url);
+        if (this.currentSourceKey === key) this.releaseMountedSource();
+        let cachedSize: number;
+        try { cachedSize = (await (await dir.getFileHandle(key)).getFile()).size; } catch { return null; }
+        const remote = await remoteSize(url);
+        if (remote !== null && remote !== cachedSize) {
+            try { await dir.removeEntry(key); } catch { /* best-effort */ }
+            Logger.log(LogCategory.SYSTEM, `WgbCache: "${key}" is stale (cached ${cachedSize} B, server ${remote} B) — dropped`);
+            return null;
+        }
+        return this.openSyncSourceByKey(key);
     }
 
     private static async openSyncSourceByKey(key: string): Promise<SyncAccessHandleSource | null> {

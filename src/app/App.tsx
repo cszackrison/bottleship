@@ -1272,7 +1272,7 @@ export default function App() {
       }
     };
     document.addEventListener("pointerlockchange", handlePointerLockChange);
-    const unlockAudio = () => { void audioEngine?.resume(); };
+    const unlockAudio = () => { void audioEngine?.resume(); ensurePersistentStorageRequested(true); };
     window.addEventListener("pointerdown", unlockAudio, { passive: true });
 
     // Clear all pressed keys on focus loss to prevent stuck keys
@@ -1289,12 +1289,15 @@ export default function App() {
         globalWorker?.postMessage({ type: "input_tick" });
       }
     };
+    // Hidden is the last reliable moment before a tab is closed or discarded: commit saves now.
+    const flushStorage = () => globalWorker?.postMessage({ type: "flush_storage" });
     const handleVisibilityChange = () => {
-      if (document.hidden) handleBlur();
+      if (document.hidden) { handleBlur(); flushStorage(); }
     };
 
     window.addEventListener("blur", handleBlur);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", flushStorage);
 
     (window as any).loadApp = async (path: string) => {
       console.log(`BottleShip: Loading App from ${path}`);
@@ -1590,6 +1593,7 @@ export default function App() {
       window.removeEventListener("pointerdown", unlockAudio);
       window.removeEventListener("blur", handleBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", flushStorage);
       document.removeEventListener("pointerlockchange", handlePointerLockChange);
       // Keep loadApp exposed for buttons
     };

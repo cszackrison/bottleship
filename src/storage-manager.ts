@@ -72,21 +72,24 @@ export async function requestPersistentStorage(): Promise<boolean> {
 }
 
 let persistAutoRequested = false;
+let persistGestureRetried = false;
 
 /**
  * One-shot, fire-and-forget persistent-storage request, called from the game-load entry
- * points (click/drop → gesture context, which Firefox's permission prompt wants; Chrome
- * decides by engagement heuristics). Saves live in OPFS next to multi-GB bundle caches;
- * best-effort mode evicts the ORIGIN wholesale under disk pressure — saves included —
- * so the moment the user commits data to us is the moment to ask for the exemption.
+ * points and again from the first user gesture. Saves live in OPFS next to multi-GB bundle
+ * caches; best-effort mode evicts the ORIGIN wholesale under disk pressure — saves included.
+ * An auto-booted game asks before any gesture, which browsers tend to refuse, so a gesture
+ * call gets one more attempt if the first was not granted.
  */
-export function ensurePersistentStorageRequested(): void {
-    if (persistAutoRequested) return;
+export function ensurePersistentStorageRequested(fromGesture = false): void {
+    if (persistAutoRequested && (!fromGesture || persistGestureRetried)) return;
+    if (persistAutoRequested) persistGestureRetried = true;
     persistAutoRequested = true;
     void (async () => {
         try {
-            if (await navigator.storage?.persisted?.()) return;
+            if (await navigator.storage?.persisted?.()) { persistGestureRetried = true; return; }
             const granted = await navigator.storage?.persist?.();
+            if (granted) persistGestureRetried = true;
             console.log(`BottleShip: persistent storage ${granted ? "granted" : "not granted (best-effort eviction stays possible)"}`);
         } catch { /* unsupported */ }
     })();

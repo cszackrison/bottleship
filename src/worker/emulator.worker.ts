@@ -251,6 +251,8 @@ let loadBundleChain: Promise<void> = Promise.resolve();
 let gameSessionActive = false;
 let registrySaveTimeout: number | null = null;
 let registrySaveGeneration = 0;
+/** The debounced registry save, runnable early by flushStorageNow(). */
+let pendingRegistrySave: (() => Promise<void>) | null = null;
 /** do_tick liveness counter — incremented in the tick_hooks_before guard every v86 do_tick().
  *  If this stops advancing while is_running()===true, the v86 run loop itself died (next_tick
  *  not rescheduled); if it advances but EIP is frozen, cycle execution retired 0 (budget stuck). */
@@ -266,6 +268,7 @@ function cancelRegistryAutosave(): void {
     clearTimeout(registrySaveTimeout);
     registrySaveTimeout = null;
   }
+  pendingRegistrySave = null;
   System.getInstance().registry.setOnChange(null);
 }
 
@@ -278,17 +281,27 @@ function installRegistryAutosave(gameId: string): void {
     registrySaveTimeout = null;
   }
 
+  const save = async () => {
+    registrySaveTimeout = null;
+    pendingRegistrySave = null;
+    if (registrySaveGeneration !== generation) return;
+
+    const state = system.registry.serialize();
+    if (state.gameId !== gameId) return;
+    await RegistryPersistence.save(gameId, state);
+  };
   system.registry.setOnChange(() => {
     if (registrySaveTimeout !== null) clearTimeout(registrySaveTimeout);
-    registrySaveTimeout = setTimeout(async () => {
-      registrySaveTimeout = null;
-      if (registrySaveGeneration !== generation) return;
-
-      const state = system.registry.serialize();
-      if (state.gameId !== gameId) return;
-      await RegistryPersistence.save(gameId, state);
-    }, 1000) as unknown as number;
+    pendingRegistrySave = save;
+    registrySaveTimeout = setTimeout(save, 1000) as unknown as number;
   });
+}
+
+/** Commit everything buffered for durability now (page hidden/closing may never come back). */
+async function flushStorageNow(): Promise<void> {
+  if (registrySaveTimeout !== null) clearTimeout(registrySaveTimeout);
+  const registry = pendingRegistrySave?.();
+  await Promise.allSettled([registry, System.getInstance().fileSystem.flushAll()]);
 }
 
 /**
@@ -1218,8 +1231,21 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // Pages sets COOP/COEP; the dev server too) and a Range-honoring origin (the R2
       // Pages Function serves 206). create() probes both, so any failure throws and we
       // fall through to the OPFS-download/staging path below, unchanged.
+      const cached = await WgbCache.openFreshSyncSourceForUrl(url);
+      if (cached) {
+        try {
+          bundle = await WgbLoader.fromSource(cached);
+          Logger.log(LogCategory.SYSTEM, `WGB: booting "${url}" from the OPFS cache`);
+          self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Cached" });
+        } catch (e) {
+          Logger.warn(LogCategory.SYSTEM, `WGB: cached copy unusable (${e}) — discarding`);
+          WgbCache.releaseMountedSource();
+          await WgbCache.evict(url);
+        }
+      }
+
       const streamCapable = (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
-      if (streamCapable) {
+      if (!bundle && streamCapable) {
         try {
           // Preferred: serve the guest's synchronous reads from a dedicated I/O
           // worker over a SharedArrayBuffer. The I/O worker owns the network,
@@ -1246,6 +1272,10 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           postStreamStage("Streaming");
           try {
             bundle = await WgbLoader.fromSource(src, postStreamStage);
+            // Streaming only caches in RAM; save the full bundle so the next visit boots from OPFS.
+            void WgbCache.stageInBackground(url).then(
+              (ok) => Logger.log(LogCategory.SYSTEM, `WGB: background cache of "${url}" ${ok ? "complete" : "skipped"}`),
+              (e) => Logger.warn(LogCategory.SYSTEM, `WGB: background cache of "${url}" failed (${e})`));
           } catch (loadErr) {
             // fromSource failed after the I/O worker spun up — terminate it so the
             // fallthrough to OPFS staging doesn't leak a live worker + its SAB.
@@ -2984,6 +3014,11 @@ self.onmessage = (event: MessageEvent) => {
     } catch (error) {
       self.postMessage({ type: replyType, ok: false, error: String(error) });
     }
+  }
+
+  if (message?.type === "flush_storage") {
+    void flushStorageNow().catch((e) => Logger.warn(LogCategory.SYSTEM, `flush_storage failed: ${e}`));
+    return;
   }
 
   if (message?.type === "netplay_config") {
