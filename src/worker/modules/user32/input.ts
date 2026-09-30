@@ -10,7 +10,7 @@ import { Mem } from '../../core/memory/mem-accessor';
 import { Marshaler } from '../../core/memory/marshaler';
 import { System } from '../../core/system';
 import { getWindowByHandle } from './window';
-import { getCapture, setCursorClipped, windows } from './shared-state';
+import { getCapture, windows } from './shared-state';
 
 export function createInputExports(): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
@@ -159,15 +159,18 @@ export function createInputExports(): Record<string, ThunkImplementation> {
     };
 
     exports['ClipCursor'] = (ctx, mem, args) => {
-        const lpRect = args[0];
-        // A non-NULL rect confines the cursor (relative/captured mouse, e.g. Unreal
-        // SetMouseCapture); NULL releases the confinement. Mirror ShowCursor's host
-        // notification (see window.ts requestHostCursorVisible) so the host can engage
-        // pointer-lock on the faithful relative-mouse signal. Track in shared-state.
-        const clip = lpRect !== 0;
-        setCursorClipped(clip);
-        self.postMessage({ type: "clip_cursor", clip });
-        Logger.verbose(LogCategory.USER32, `ClipCursor(0x${lpRect.toString(16)}) -> clip=${clip}`);
+        const lpRect = args[0] >>> 0;
+        // A non-NULL rect confines the cursor to it (screen coords); NULL releases it. The rect is
+        // applied to the positions the guest sees; the host is told so it can pointer-lock (the
+        // only way a page can keep the real mouse from leaving, e.g. to edge-scroll a windowed game).
+        const rect = lpRect && lpRect + 16 <= mem.length ? {
+            left: Mem.readInt32(lpRect) ?? 0, top: Mem.readInt32(lpRect + 4) ?? 0,
+            right: Mem.readInt32(lpRect + 8) ?? 0, bottom: Mem.readInt32(lpRect + 12) ?? 0,
+        } : null;
+        const clip = rect && rect.right > rect.left && rect.bottom > rect.top ? rect : null;
+        System.getInstance().inputManager.setClipRect(clip);
+        self.postMessage({ type: "clip_cursor", clip: clip !== null });
+        Logger.verbose(LogCategory.USER32, `ClipCursor(0x${lpRect.toString(16)}) -> ${rect ? JSON.stringify(rect) : "released"}`);
         return 1; // TRUE
     };
 

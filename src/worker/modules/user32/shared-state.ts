@@ -262,19 +262,6 @@ export function getAbsoluteWindowPosition(win: WindowInfo): { x: number; y: numb
 }
 export let cursorDisplayCount = 0;
 
-// Cursor confinement state (ClipCursor with a non-NULL rect). Tracks the faithful
-// relative/captured-mouse signal alongside cursorDisplayCount; host engages pointer-lock
-// on (cursor hidden) OR (cursor clipped).
-export let cursorClipped = false;
-
-export function setCursorClipped(clipped: boolean): void {
-    cursorClipped = clipped;
-}
-
-export function isCursorClipped(): boolean {
-    return cursorClipped;
-}
-
 // Mouse capture state
 export let capturedHwnd: number = 0;
 
@@ -397,7 +384,6 @@ export function resetUser32SharedState(): void {
     windows.clear();
     nextWindowId = 1;
     cursorDisplayCount = 0;
-    cursorClipped = false;
     lastLoadStringHint = null;
     capturedHwnd = 0;
     buttonCheckStates.clear();

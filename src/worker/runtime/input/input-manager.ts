@@ -235,6 +235,7 @@ export class InputManager {
     /** Tracks keys that transitioned 0→pressed since last GetAsyncKeyState query (bit 0). */
     private keyPressedSinceLastQuery = new Uint8Array(256);
     private currentMouseX = 0;
+    private clipRect: { left: number; top: number; right: number; bottom: number } | null = null;
     private currentMouseY = 0;
     private currentButtons = 0;
     private gamepadConnected = false;
@@ -402,8 +403,8 @@ export class InputManager {
         // if it moved, the snapshot was torn/superseded — bail WITHOUT advancing
         // lastSeq (the newer record is picked up next poll) and WITHOUT consuming
         // the destructive wheel delta.
-        const mouseX           = this.inputView[INPUT_INDEX.mouseX];
-        const mouseY           = this.inputView[INPUT_INDEX.mouseY];
+        let mouseX             = this.inputView[INPUT_INDEX.mouseX];
+        let mouseY             = this.inputView[INPUT_INDEX.mouseY];
         const buttons          = this.inputView[INPUT_INDEX.buttons];
         const mouseInside      = this.inputView[INPUT_INDEX.mouseInside] !== 0;
         const gamepadConnected = this.inputView[INPUT_INDEX.gamepadConnected] === 1;
@@ -415,6 +416,10 @@ export class InputManager {
 
         if (Atomics.load(this.inputView, INPUT_INDEX.seq) !== seq) return;
         this.lastSeq = seq;
+        if (this.clipRect) {
+            mouseX = this.clampX(mouseX);
+            mouseY = this.clampY(mouseY);
+        }
 
         // Commit path only (snapshot validated): consume the wheel DELTA slot
         // destructively now, so a skipped/torn poll never swallows a notch.
@@ -881,6 +886,7 @@ export class InputManager {
         this.lastDownX    = [0, 0, 0];
         this.lastDownY    = [0, 0, 0];
         this.lastDownHwnd = [0, 0, 0];
+        this.clipRect = null;
         this.repeatVk = -1;
         this.tmeLeaveHwnds.clear();
         this.tmeHoverMap.clear();
@@ -1110,8 +1116,28 @@ export class InputManager {
     }
 
     setMousePosition(x: number, y: number): void {
-        this.currentMouseX = x | 0;
-        this.currentMouseY = y | 0;
+        this.currentMouseX = this.clampX(x | 0);
+        this.currentMouseY = this.clampY(y | 0);
+    }
+
+    /** ClipCursor: confine the cursor to [left,right) × [top,bottom); null releases it. */
+    setClipRect(rect: { left: number; top: number; right: number; bottom: number } | null): void {
+        this.clipRect = rect;
+        if (rect) this.setMousePosition(this.currentMouseX, this.currentMouseY);
+    }
+
+    getClipRect(): { left: number; top: number; right: number; bottom: number } | null {
+        return this.clipRect;
+    }
+
+    private clampX(x: number): number {
+        const r = this.clipRect;
+        return r ? Math.max(r.left, Math.min(r.right - 1, x)) : x;
+    }
+
+    private clampY(y: number): number {
+        const r = this.clipRect;
+        return r ? Math.max(r.top, Math.min(r.bottom - 1, y)) : y;
     }
 
     /**

@@ -2234,11 +2234,12 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         const lpRect = args[0] >>> 0;
         if (lpRect && lpRect + 16 <= mem.length) {
             const mode = getCurrentScreenMode();
+            const clip = System.getInstance().inputManager.getClipRect() ?? { left: 0, top: 0, right: mode.width, bottom: mode.height };
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-            view.setInt32(lpRect + 0, 0, true);
-            view.setInt32(lpRect + 4, 0, true);
-            view.setInt32(lpRect + 8, mode.width, true);
-            view.setInt32(lpRect + 12, mode.height, true);
+            view.setInt32(lpRect + 0, clip.left, true);
+            view.setInt32(lpRect + 4, clip.top, true);
+            view.setInt32(lpRect + 8, clip.right, true);
+            view.setInt32(lpRect + 12, clip.bottom, true);
         }
         return 1;
     };
