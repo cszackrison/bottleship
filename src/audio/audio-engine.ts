@@ -533,29 +533,28 @@ export class AudioEngine {
     // audio running again — clear the intentional-pause flag.
     this.userPaused = false;
     const context = this.ensureContext();
+    // Never coalesce context.resume(): Chromium leaves a resume() issued before user activation
+    // pending forever, and a later gesture does not settle it — only a fresh resume() made after
+    // activation starts the context. Awaiting an in-flight pre-gesture call would keep audio silent.
+    if (context.state === "suspended") {
+      try {
+        await context.resume();
+        console.log("BottleShip: AudioContext resumed", { state: context.state });
+      } catch (err) {
+        console.warn("BottleShip: AudioContext resume blocked", {
+          state: context.state,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+    }
+    if (context.state !== "running") return;
     if (this.resumePromise) {
       await this.resumePromise;
       return;
     }
 
     this.resumePromise = (async () => {
-      // Only resume if suspended (avoid redundant calls when already running)
-      if (context.state === "suspended") {
-        try {
-          await context.resume();
-          console.log("BottleShip: AudioContext resumed", { state: context.state });
-        } catch (err) {
-          // Gesture-gated failure: keep pending audio; next user gesture can resume successfully.
-          console.warn("BottleShip: AudioContext resume blocked", {
-            state: context.state,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          return;
-        }
-      } else if (context.state !== "running") {
-        return;
-      }
-
       await this.ensureReady();
 
       // Resume encoded sources that were playing before pause
