@@ -67,6 +67,16 @@ const splitFindPattern = (rawPattern: string): { searchPath: string; searchMask:
     return { searchPath, searchMask };
 };
 
+/** Windows lists "." and ".." first in every directory except a drive root; callers rely on
+ *  them (StarCraft's map browser shows ".." as "Up One Level"). */
+const withDotEntries = (searchPath: string, entries: any[]): any[] => {
+    const vfs = System.getInstance().fileSystem;
+    const abs = vfs.resolvePath(searchPath).replace(/\\+$/, '');
+    if (/^[A-Za-z]:$/.test(abs) || !vfs.directoryExists(abs)) return entries;
+    const dot = (name: string) => ({ path: `${abs}\\${name}`, name, kind: 'dir', size: 0, source: 'overlay' });
+    return [dot('.'), dot('..'), ...entries];
+};
+
 const fillFindDataA = (mem: Uint8Array, addr: number, entry: any) => {
     // Keep ABI-compatible layout and avoid leaking stale heap bytes.
     mem.fill(0, addr, Math.min(addr + WIN32_FIND_DATAA_SIZE, mem.length));
@@ -141,7 +151,7 @@ export function registerFileIoFindExports(exports: Record<string, ThunkImplement
 
         const { searchPath, searchMask } = splitFindPattern(pattern);
 
-        const entries = vfs.listDirectory(searchPath);
+        const entries = withDotEntries(searchPath, vfs.listDirectory(searchPath));
         const regex = patternToRegex(searchMask);
         const matches = entries.filter(e => regex.test(e.name));
 
@@ -196,7 +206,7 @@ export function registerFileIoFindExports(exports: Record<string, ThunkImplement
 
         const { searchPath, searchMask } = splitFindPattern(pattern);
 
-        const entries = vfs.listDirectory(searchPath);
+        const entries = withDotEntries(searchPath, vfs.listDirectory(searchPath));
         const regex = patternToRegex(searchMask);
         const matches = entries.filter(e => regex.test(e.name));
 
