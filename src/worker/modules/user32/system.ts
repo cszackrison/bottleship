@@ -2204,6 +2204,7 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         const interval = args[0] >>> 0;
         if (interval < 4 || interval > 5000) return 0;
         doubleClickTimeMs = interval;
+        System.getInstance().inputManager.doubleClickTimeMs = interval;
         return 1;
     };
     exports['EnumWindows'] = () => 1;

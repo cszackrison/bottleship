@@ -203,9 +203,16 @@ function isToggleKey(vk: number): boolean {
     return vk === VK_CAPITAL || vk === VK_NUMLOCK || vk === VK_SCROLL;
 }
 
-// Double-click detection thresholds
+// Double-click: Windows defaults for GetDoubleClickTime and SM_CX/CYDOUBLECLK (a 4×4 box
+// centred on the first click). Only windows whose class has CS_DBLCLKS receive *BUTTONDBLCLK.
 const DBLCLK_TIME_MS = 500;
 const DBLCLK_DIST_PX = 4;
+const CS_DBLCLKS = 0x0008;
+
+// Keyboard typematic: Windows defaults SPI_GETKEYBOARDDELAY=1 (500 ms) and
+// SPI_GETKEYBOARDSPEED=31 (~30 repeats/s). Only the most recently pressed key repeats.
+const KEY_REPEAT_DELAY_MS = 500;
+const KEY_REPEAT_INTERVAL_MS = 33;
 
 // Default WM_MOUSEHOVER delay (matches Windows default HOVER_DEFAULT)
 const HOVER_DEFAULT_MS = 400;
@@ -267,6 +274,10 @@ export class InputManager {
     private lastDownTime = [0, 0, 0];
     private lastDownX    = [0, 0, 0];
     private lastDownY    = [0, 0, 0];
+    private lastDownHwnd = [0, 0, 0];
+    doubleClickTimeMs = DBLCLK_TIME_MS;
+    private repeatVk = -1;
+    private repeatAt = 0;
 
     // TrackMouseEvent state
     private tmeLeaveHwnds = new Set<number>();
@@ -376,6 +387,7 @@ export class InputManager {
      */
     poll(forceEnqueue = false): void {
         if (!this.inputView) return;
+        this.pumpKeyRepeat(forceEnqueue);
 
         // SAB input seqlock (reader/acquire side; writers = host App.tsx +
         // the worker injectors below, both bracket payload with begin/end so
@@ -469,6 +481,8 @@ export class InputManager {
                             }
                         }
                         this.keyStates[vk] = nowPressed ? 0x80 : 0x00;
+                        if (nowPressed) { this.repeatVk = vk; this.repeatAt = performance.now() + KEY_REPEAT_DELAY_MS; }
+                        else if (vk === this.repeatVk) this.repeatVk = -1;
                         // A live hardware transition supersedes any stale SetKeyboardState
                         // snapshot for THIS key. Win32 GetKeyState reflects the most recent
                         // input per key, not a table a game pushed once. Without this, a single
@@ -641,13 +655,13 @@ export class InputManager {
         // Mouse moves can be skipped/coalesced, but clicks are discrete events.
         if (leftDown !== wasLeftDown) {
             let msg = leftDown ? WM_LBUTTONDOWN : WM_LBUTTONUP;
-            if (leftDown) msg = this.checkDblClick(0, clientX, clientY, WM_LBUTTONDOWN, WM_LBUTTONDBLCLK);
+            if (leftDown) msg = this.checkDblClick(0, mouseTargetWin, screenX, screenY, WM_LBUTTONDOWN, WM_LBUTTONDBLCLK);
             this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
         }
 
         if (rightDown !== wasRightDown) {
             let msg = rightDown ? WM_RBUTTONDOWN : WM_RBUTTONUP;
-            if (rightDown) msg = this.checkDblClick(1, clientX, clientY, WM_RBUTTONDOWN, WM_RBUTTONDBLCLK);
+            if (rightDown) msg = this.checkDblClick(1, mouseTargetWin, screenX, screenY, WM_RBUTTONDOWN, WM_RBUTTONDBLCLK);
             this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
 
             Logger.verbose(LogCategory.SYSTEM, `Input: ${
@@ -659,7 +673,7 @@ export class InputManager {
 
         if (middleDown !== wasMiddleDown) {
             let msg = middleDown ? WM_MBUTTONDOWN : WM_MBUTTONUP;
-            if (middleDown) msg = this.checkDblClick(2, clientX, clientY, WM_MBUTTONDOWN, WM_MBUTTONDBLCLK);
+            if (middleDown) msg = this.checkDblClick(2, mouseTargetWin, screenX, screenY, WM_MBUTTONDOWN, WM_MBUTTONDBLCLK);
             this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
             Logger.verbose(LogCategory.SYSTEM, `Input: ${
                 middleDown
@@ -736,21 +750,36 @@ export class InputManager {
     }
 
     /**
-     * Check if a button press qualifies as a double-click.
-     * Returns dblClkMsg if within time/distance threshold; otherwise downMsg (and records timestamp).
+     * Button-down → *BUTTONDBLCLK when the window's class has CS_DBLCLKS and this press follows a
+     * press of the same button on the same window within the double-click time and box; the
+     * press after a double-click starts a new sequence.
      */
-    private checkDblClick(
-        btn: 0 | 1 | 2,
-        x: number,
-        y: number,
-        downMsg: number,
-        dblClkMsg: number,
-    ): number {
-        // Disable DBLCLK generation — always send DOWN.
-        // Heroes3 WndProc calls SetCapture on LBUTTONDOWN but NOT on DBLCLK.
-        // Some games' window classes may not have CS_DBLCLKS.
-        this.lastDownTime[btn] = 0;
-        return downMsg;
+    private checkDblClick(btn: 0 | 1 | 2, win: WindowObject, x: number, y: number, downMsg: number, dblClkMsg: number): number {
+        const now = performance.now();
+        const half = DBLCLK_DIST_PX / 2;
+        const isDbl = (win.wndClass.style & CS_DBLCLKS) !== 0 &&
+            this.lastDownTime[btn] !== 0 && this.lastDownHwnd[btn] === win.hwnd &&
+            now - this.lastDownTime[btn] <= this.doubleClickTimeMs &&
+            Math.abs(x - this.lastDownX[btn]) <= half && Math.abs(y - this.lastDownY[btn]) <= half;
+        this.lastDownTime[btn] = isDbl ? 0 : now;
+        this.lastDownX[btn] = x;
+        this.lastDownY[btn] = y;
+        this.lastDownHwnd[btn] = win.hwnd;
+        return isDbl ? dblClkMsg : downMsg;
+    }
+
+    /** Typematic repeat: a held key re-sends WM_KEYDOWN with lParam bit 30 set (key was already down). */
+    private pumpKeyRepeat(forceEnqueue: boolean): void {
+        if (this.repeatVk < 0 || this.deterministicMode) return;
+        const now = performance.now();
+        if (now < this.repeatAt) return;
+        const count = 1 + Math.floor((now - this.repeatAt) / KEY_REPEAT_INTERVAL_MS);
+        this.repeatAt += count * KEY_REPEAT_INTERVAL_MS;
+        const target = this.windowManager.getKeyboardTargetWindow();
+        if (!target || !(forceEnqueue || (this.shouldEnqueueMessages?.() ?? true))) return;
+        const vk = this.repeatVk;
+        const lParam = (Math.min(count, 0xffff) | (vkToScanCode(vk) << 16) | (isExtendedKey(vk) ? 0x01000000 : 0) | 0x40000000) >>> 0;
+        this.windowManager.postMessage(target.hwnd, WM_KEYDOWN, vk, lParam, 0, 0, 0, this.buildPackedKeyState(this.packedKeyStateScratch));
     }
 
     /**
@@ -851,6 +880,8 @@ export class InputManager {
         this.lastDownTime = [0, 0, 0];
         this.lastDownX    = [0, 0, 0];
         this.lastDownY    = [0, 0, 0];
+        this.lastDownHwnd = [0, 0, 0];
+        this.repeatVk = -1;
         this.tmeLeaveHwnds.clear();
         this.tmeHoverMap.clear();
         this.pendingKeyEvents = [];
