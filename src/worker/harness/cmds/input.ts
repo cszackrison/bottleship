@@ -257,6 +257,37 @@ export function registerInputCommands(svc: HarnessService): void {
         return { ok: true, active: !!probe, entries: probe ? probe.entries : [] };
     });
 
+    // msgTrace(action) — record the keyboard/mouse window messages the input layer POSTS
+    // (WM_KEYFIRST..WM_KEYLAST, WM_MOUSEFIRST..WM_MOUSELAST): answers "did the guest get a
+    // WM_LBUTTONDBLCLK / an auto-repeat WM_KEYDOWN" without relying on dispatch logging.
+    // Actions: "start" | "stop" (returns entries) | "read".
+    svc.register("msgTrace", (args) => {
+        const action = String(args[0] ?? "read");
+        const wm = sys().windowManager as any;
+        if (!wm) throw new HarnessError("no window manager", HarnessErrorCode.NO_PROCESS);
+        let probe: { entries: any[]; original: (...a: any[]) => unknown } | undefined = wm.__msgTraceProbe;
+        if (action === "start") {
+            if (probe) return { ok: true, already: true };
+            probe = { entries: [], original: wm.postMessage };
+            wm.__msgTraceProbe = probe;
+            wm.postMessage = function (hwnd: number, msg: number, wParam: number, lParam: number, ...rest: unknown[]) {
+                if ((msg >= 0x100 && msg <= 0x109) || (msg >= 0x200 && msg <= 0x20e)) {
+                    if (probe!.entries.length >= 2000) probe!.entries.shift();
+                    probe!.entries.push({ t: performance.now() | 0, hwnd, msg: "0x" + msg.toString(16), wParam: "0x" + (wParam >>> 0).toString(16), lParam: "0x" + (lParam >>> 0).toString(16) });
+                }
+                return probe!.original.call(this, hwnd, msg, wParam, lParam, ...rest);
+            };
+            return { ok: true, started: true };
+        }
+        if (action === "stop") {
+            if (!probe) return { ok: true, already: true };
+            wm.postMessage = probe.original;
+            delete wm.__msgTraceProbe;
+            return { ok: true, stopped: true, entries: probe.entries };
+        }
+        return { ok: true, active: !!probe, entries: probe ? probe.entries : [] };
+    });
+
     /** dialogs() — enumerate all windows/controls with GLOBAL coords (read-only). */
     svc.register("dialogs", () => {
         const out = [];

@@ -113,6 +113,7 @@ export class HarnessChain {
     /** Netplay link: IPX node, relay attached, sent/received/dropped datagrams. */
     netplay(): this { return this.push("netplay", []); }
     events(n?: number): this { return this.push("events", [n]); }
+    msgTrace(action: "start" | "stop" | "read" = "read"): this { return this.push("msgTrace", [action]); }
     /** Named-bucket sub-phase timings (avg/total/max/count). filter by substring; maxMs = worst single call. */
     profilerStats(opts?: { filter?: string; top?: number; sort?: "max" | "total" | "avg" }): this { return this.push("profilerStats", [opts]); }
 
