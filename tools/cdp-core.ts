@@ -12,7 +12,8 @@
  * Bun script (top-level await, Bun.spawnSync, global fetch/WebSocket).
  */
 
-export const DEFAULT_CDP_PORT = 9333;
+/** BS_CDP_PORT / BS_PROFILE select a separate browser instance (e.g. one per netplay player). */
+export const DEFAULT_CDP_PORT = Number(process.env.BS_CDP_PORT ?? 9333);
 export const DEFAULT_DEV_URL = "http://localhost:5174/?game=dev";
 export const GAME_DEV_FILTER = "game=dev";
 const IS_MAC = process.platform === "darwin";
@@ -26,9 +27,9 @@ const CHROME_PATH = process.env.BS_CHROME ?? (IS_MAC
 /** Extra launch flags (space-separated), e.g. WebGPU experiments a distro browser
  *  (Brave) keeps behind brave://flags — mirrors them onto the harness instance. */
 const CHROME_ARGS = (process.env.BS_CHROME_ARGS ?? "").split(/\s+/).filter(Boolean);
-const DEFAULT_PROFILE = IS_MAC || IS_LINUX
+const DEFAULT_PROFILE = process.env.BS_PROFILE ?? (IS_MAC || IS_LINUX
     ? `${process.env.HOME}/.bottleship-cdp-profile`
-    : `${process.cwd()}/tmp/cdp-profile`;
+    : `${process.cwd()}/tmp/cdp-profile`);
 
 export interface CdpTarget {
     id: string;
