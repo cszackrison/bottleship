@@ -1,0 +1,47 @@
+# Curated custom (UMS) maps from scmscx.com: English, 1.16.1-compatible, most-downloaded version of each classic.
+# <scmscx map id>  <filename in the bundle>   — rebuild: bun tools/scmscx.ts bundle tools/scmscx-ums.txt public/apps/starcraft_retail.wgb public/apps/starcraft_ums.wgb
+D3V63zYG  A Day At School RPG v7.0.scx
+kdbcd55h  Archon Tag -Superior- v1.9.scm
+xs8pDYyt  Art of Defense II v2.0.scm
+pT3ks2fb  Blood Pressure Marathon V8.1.scx
+2Bfdz5R6  Bunker Defense Survival v2.5.2.scx
+cxdpYfV8  Cat & Mouse CPU v3.scx
+Tjqz68cY  Cops and Robbers SE Final.scx
+Tzc45frq  DBZ All Sagas Remastered.scx
+bgy98pBp  DBZ RPG - Sagas SE.scx
+H8th359V  Defend the Temple Final.scm
+q8xcBRrR  Diplomacy Super Gun.scx
+7x6kq7Hj  Evolves 2003.scx
+Bs3dDHk7  Fastest Possible Map.scx
+rYcGRcjD  Final Fantasy RPG.scx
+34DqDG62  Golem Madness.scm
+H7VHD6s2  Golem Revelation v9.0.scx
+4k4z9Ycr  Helms Deep Comp.scx
+zk2xd524  Hide and Seek.scx
+938T9TVb  Hydra Defence Extreme 7.1.scx
+sy87Dj5r  Impossible Scenarios Solo.scx
+YsxB2H6c  Lurker Defense Solo Hard 3.2b.scx
+RYgxpRHz  Marine Defense 10-Way v4.2.scx
+rhc8YBsT  Marine Special Forces DOC.scx
+jf77x6jG  Mario Party 2 v1.02.scx
+32pVzhHb  Observer Madness (v4).scx
+DfByxtq6  Parasite Beta 5.scx
+zRz6jzsp  Pokemon RPG GOLD.scm
+VxrVHTb4  Pokemon RPG Perfection v3.3.scx
+3762ygt2  Protect the Queen SE Final.scm
+jz3Vbgyd  Resident Evil Raccoon City.scx
+Dc56Thbj  RISK Classic Version.scx
+TVHH69f5  Run Zergling Run 3.1.scx
+RpGqgTDp  SCV Football 3v3.scm
+9t8GhR59  Sniper Bald Locks v333F.scx
+r8VkRRhx  Sniper Paintball Final.scm
+Tkpr54t3  Stacked Cannon Defense 10-Way.scx
+GqGq3TDH  Sunken Defense 2k5 v1.3.scx
+r5RdgDd5  Super Marines 2-P.scx
+6zs2ryxD  Test of Survival Apocalypse.scm
+Hrj5Yj2h  The Matrix RPG V1.0.scx
+72G4R3fr  The Thing 3 Evolution.scm
+p4sb2c8T  Turret Defense 1oooo Final.scm
+5cHz9fbR  Volcano Run 2.8 RiverS.scx
+hycjBTdj  Zelda Bound.scx
+YyYxy4Rp  Zone Control Mass Assault.scm
