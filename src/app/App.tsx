@@ -1168,10 +1168,13 @@ export default function App() {
       const inputView = globalInputView;
       if (!inputView) return;
 
-      const insideCanvas = event.clientX >= rect.left &&
+      // While pointer-locked, clientX/Y is the frozen OS cursor, not the guest's virtual cursor:
+      // scroll at the virtual position instead of teleporting the guest cursor there.
+      const locked = pointerLockedRef.current;
+      const insideCanvas = locked || (event.clientX >= rect.left &&
         event.clientX <= rect.right &&
         event.clientY >= rect.top &&
-        event.clientY <= rect.bottom;
+        event.clientY <= rect.bottom);
       if (!insideCanvas) return;
 
       const pointerSpace =
@@ -1183,8 +1186,8 @@ export default function App() {
 
       const scaleX = width / rect.width;
       const scaleY = height / rect.height;
-      const x = Math.max(0, Math.min(width, (event.clientX - rect.left) * scaleX));
-      const y = Math.max(0, Math.min(height, (event.clientY - rect.top) * scaleY));
+      const x = locked ? virtualMouseRef.current.x : Math.max(0, Math.min(width, (event.clientX - rect.left) * scaleX));
+      const y = locked ? virtualMouseRef.current.y : Math.max(0, Math.min(height, (event.clientY - rect.top) * scaleY));
 
       beginInputWrite(inputView);
       inputView[INPUT_INDEX.mouseX] = Math.round(x);
