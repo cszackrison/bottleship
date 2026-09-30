@@ -7,6 +7,7 @@
  *   bun tools/wgb.ts cat      <archive.wgb> <entry>                — print entry to stdout
  *   bun tools/wgb.ts extract  <archive.wgb> <entry> <output-path>  — extract entry to file
  *   bun tools/wgb.ts replace  <archive.wgb> <entry> <input-path>   — replace entry from file
+ *   bun tools/wgb.ts add      <archive.wgb> <folder> <file|dir>... — add/replace files in one rewrite
  *   bun tools/wgb.ts remove   <archive.wgb> <entry>[,<entry>...]   — drop entries
  *   bun tools/wgb.ts manifest <archive.wgb>                        — pretty-print manifest.json
  *   bun tools/wgb.ts set-manifest <archive.wgb> <manifest.json>    — replace manifest from file
@@ -23,7 +24,8 @@
  * to unsigned integer" — a >2GB Buffer length overflow).
  */
 
-import { openSync, readSync, writeSync, closeSync, fstatSync, renameSync, unlinkSync } from "fs";
+import { openSync, readSync, writeSync, closeSync, fstatSync, renameSync, unlinkSync, readdirSync, statSync } from "fs";
+import { basename, join } from "path";
 import { inflateRawSync } from "zlib";
 
 // ─── ZIP signatures ──────────────────────────────────────────────────────────
@@ -401,6 +403,31 @@ function cmdReplace(wgbPath: string, entryName: string, inputPath: string, outpu
     writeOverride(wgbPath, entryName, newData, outputPath);
 }
 
+/** Add (or replace) many files under `folder` in one rewrite; directories contribute their files. */
+function cmdAdd(wgbPath: string, folder: string, inputs: string[]) {
+    const files = inputs.flatMap((p) => statSync(p).isDirectory()
+        ? readdirSync(p).map((n) => join(p, n)).filter((f) => statSync(f).isFile())
+        : [p]);
+    const prefix = folder.replace(/\\/g, "/").replace(/\/+$/, "");
+    const incoming = new Map(files.map((f) => {
+        const fd = openSync(f, "r");
+        try { return [`${prefix}/${basename(f)}`.toLowerCase(), { name: `${prefix}/${basename(f)}`, data: readRange(fd, 0, fstatSync(fd).size) }] as const; }
+        finally { closeSync(fd); }
+    }));
+    const tmp = `${wgbPath}.wgbtmp`;
+    const result = withArchive(wgbPath, (fd, _size, entries) => {
+        const replaced = new Set<string>();
+        const r = rebuildStreaming(fd, entries, tmp, (n) => {
+            const hit = incoming.get(n.toLowerCase());
+            if (hit) replaced.add(n.toLowerCase());
+            return hit?.data ?? null;
+        }, [...incoming].filter(([k]) => !entries.some((e) => e.name.toLowerCase() === k)).map(([, v]) => v));
+        return { ...r, replaced: replaced.size };
+    });
+    renameSync(tmp, wgbPath);
+    console.log(`Added ${incoming.size - result.replaced} and replaced ${result.replaced} file(s) under ${prefix}/ -> ${wgbPath} [${result.entries} entries, ${result.bytes} bytes]`);
+}
+
 function cmdRemove(wgbPath: string, entryNames: string[], outputPath?: string) {
     const dest = outputPath ?? wgbPath;
     const tmp = `${dest}.wgbtmp`;
@@ -493,6 +520,7 @@ Usage:
   bun tools/wgb.ts cat           <archive.wgb> <entry>
   bun tools/wgb.ts extract       <archive.wgb> <entry> <output>
   bun tools/wgb.ts replace       <archive.wgb> <entry> <input> [output]
+  bun tools/wgb.ts add           <archive.wgb> <folder-in-archive> <file|dir>...
   bun tools/wgb.ts remove        <archive.wgb> <entry>[,<entry>...] [output]
   bun tools/wgb.ts repack        <archive.wgb>                    — rewrite as Store-only (decompress Deflate entries)
   bun tools/wgb.ts manifest      <archive.wgb>
@@ -522,6 +550,10 @@ switch (cmd) {
     case "replace":
         if (!args[0] || !args[1] || !args[2]) { console.error("Usage: wgb.ts replace <archive> <entry> <input> [output]"); process.exit(1); }
         cmdReplace(args[0], args[1], args[2], args[3]);
+        break;
+    case "add":
+        if (!args[0] || !args[1] || !args[2]) { console.error("Usage: wgb.ts add <archive> <folder-in-archive> <file|dir>..."); process.exit(1); }
+        cmdAdd(args[0], args[1], args.slice(2));
         break;
     case "remove":
     case "rm":
