@@ -253,44 +253,6 @@ export function createInputExports(): Record<string, ThunkImplementation> {
         return 1; // TRUE
     };
 
-    exports['LoadAcceleratorsA'] = (ctx, mem, args) => {
-        const hInstance = args[0];
-        const lpTableName = args[1];
-        Logger.verbose(LogCategory.USER32, `LoadAcceleratorsA(0x${hInstance.toString(16)}, 0x${lpTableName.toString(16)})`);
-        return 0; // NULL - accelerator table not found
-    };
-
-    exports['CopyAcceleratorTableA'] = (ctx, mem, args) => {
-        const hAccelSrc = args[0];
-        const lpAccelDst = args[1];
-        const cAccelEntries = args[2];
-        Logger.verbose(LogCategory.USER32, `CopyAcceleratorTableA(0x${hAccelSrc.toString(16)}, 0x${lpAccelDst.toString(16)}, ${cAccelEntries})`);
-        // No real accelerator tables — return 0 entries copied
-        return 0;
-    };
-
-    exports['CreateAcceleratorTableA'] = (ctx, mem, args) => {
-        const lpAccel = args[0];
-        const cAccel = args[1];
-        Logger.verbose(LogCategory.USER32, `CreateAcceleratorTableA(0x${lpAccel.toString(16)}, ${cAccel})`);
-        // Return a non-zero dummy handle so callers don't treat it as failure
-        return 0x1ACC;
-    };
-
-    exports['TranslateAcceleratorA'] = exports['TranslateAcceleratorW'] = (ctx, mem, args) => {
-        const hWnd = args[0];
-        const hAccTable = args[1];
-        const lpMsg = args[2];
-        Logger.verbose(LogCategory.USER32, `TranslateAccelerator(0x${hWnd.toString(16)}, 0x${hAccTable.toString(16)}, 0x${lpMsg.toString(16)})`);
-        return 0; // Message not translated
-    };
-
-    exports['DestroyAcceleratorTable'] = (ctx, mem, args) => {
-        const hAccel = args[0];
-        Logger.verbose(LogCategory.USER32, `DestroyAcceleratorTable(0x${hAccel.toString(16)})`);
-        return 1; // TRUE - success
-    };
-
     exports['SetPropA'] = (ctx, mem, args) => {
         const hWnd = args[0];
         const lpString = args[1];

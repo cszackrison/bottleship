@@ -281,6 +281,8 @@ export const user32Module: ModuleDescriptor = {
         makeFunc("LoadAcceleratorsA", 2),
         makeFunc("CopyAcceleratorTableA", 3),
         makeFunc("CreateAcceleratorTableA", 2),
+        makeFunc("CreateAcceleratorTableW", 2),
+        makeFunc("CopyAcceleratorTableW", 3),
         makeFunc("TranslateAcceleratorA", 3),
         makeFunc("TranslateAcceleratorW", 3),
         makeFunc("DestroyAcceleratorTable", 1),

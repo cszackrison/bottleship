@@ -6,6 +6,7 @@ import { IModule } from '../../core/module';
 import { Process } from '../../core/process';
 import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
 
+import { createAcceleratorExports as accelerator } from './accelerator';
 import { createClassExports as class_ } from './class';
 import { createDialogExports as dialog } from './dialog';
 import { createInputExports as input } from './input';
@@ -20,6 +21,8 @@ export class User32 implements IModule {
     exports: Record<string, ThunkImplementation> = {};
 
     initialize(process: Process): void {
+        // accelerator functions
+        Object.assign(this.exports, accelerator());
         // class functions
         Object.assign(this.exports, class_());
         // dialog functions
